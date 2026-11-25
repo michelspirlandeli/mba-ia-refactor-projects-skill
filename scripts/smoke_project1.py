@@ -58,6 +58,19 @@ cases = [
     ("GET", "/rota-inexistente", None),
 ]
 
+# Casos extras de segurança/integridade (só fazem sentido no código refatorado).
+if "--security" in sys.argv:
+    cases += [
+        ("POST", "/usuarios", {"nome": "Ana", "email": "ana@email.com", "senha": "outra1"}),   # 409 duplicado
+        ("POST", "/usuarios", {"nome": ["x"], "email": "b@email.com", "senha": "s"}),         # 400 tipo
+        ("POST", "/usuarios", {"nome": "B", "email": "b@email.com", "senha": 123}),           # 400 tipo
+        ("POST", "/pedidos", {"usuario_id": 9999, "itens": [{"produto_id": 1, "quantidade": 1}]}),  # 400
+        ("POST", "/pedidos", {"usuario_id": {"a": 1}, "itens": [{"produto_id": 1, "quantidade": 1}]}),  # 400
+        ("POST", "/produtos", {"nome": "Abc", "descricao": {"x": 1}, "preco": 1, "estoque": 1}),  # 400
+        ("POST", "/produtos", {"nome": "Abc", "preco": 1, "estoque": 1.5}),                   # 400
+        ("POST", "/admin/reset-db", None),                                                    # 403 fail-closed
+    ]
+
 for method, path, body in cases:
     status, payload = call(method, path, body)
     print(f"{status} {method:6} {path[:60]:60} {json.dumps(shape(payload), ensure_ascii=False)[:200]}")

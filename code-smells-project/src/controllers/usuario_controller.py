@@ -6,8 +6,8 @@ import re
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from src.config.settings import TIPO_USUARIO_PADRAO
-from src.controllers.validators import exigir_payload
-from src.middlewares.error_handler import NotFoundError, UnauthorizedError, ValidationError
+from src.controllers.validators import exigir_payload, exigir_texto
+from src.exceptions import ConflictError, NotFoundError, UnauthorizedError, ValidationError
 from src.models import usuario_model
 
 logger = logging.getLogger(__name__)
@@ -35,10 +35,17 @@ def criar(dados):
     senha = dados.get("senha", "")
     if not nome or not email or not senha:
         raise ValidationError("Nome, email e senha são obrigatórios")
+    exigir_texto(nome, "Nome")
+    exigir_texto(senha, "Senha")
     if not isinstance(email, str) or not EMAIL_REGEX.match(email):
         raise ValidationError("Email inválido")
+    if usuario_model.email_existe(email):
+        raise ConflictError("Email já cadastrado")
 
-    usuario_id = usuario_model.criar(nome, email, generate_password_hash(senha), TIPO_USUARIO_PADRAO)
+    try:
+        usuario_id = usuario_model.criar(nome, email, generate_password_hash(senha), TIPO_USUARIO_PADRAO)
+    except usuario_model.EmailDuplicado:
+        raise ConflictError("Email já cadastrado")  # corrida entre duas requisições simultâneas
     logger.info("Usuário criado id=%s", usuario_id)
     return usuario_id
 
@@ -60,6 +67,8 @@ def autenticar(dados):
     senha = dados.get("senha", "")
     if not email or not senha:
         raise ValidationError("Email e senha são obrigatórios")
+    if not isinstance(email, str) or not isinstance(senha, str):
+        raise UnauthorizedError("Email ou senha inválidos")
 
     usuario = usuario_model.buscar_credenciais_por_email(email)
     if not usuario or not _senha_confere(usuario, senha):

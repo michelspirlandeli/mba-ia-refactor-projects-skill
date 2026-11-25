@@ -10,15 +10,20 @@ def _env_bool(name, default="false"):
 class Config:
     # Segredos: nunca literais no código. Sem SECRET_KEY no ambiente, gera uma chave efêmera (dev).
     SECRET_KEY = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
-    # Token para rotas /admin/*. Vazio = rotas admin abertas (comportamento legado, apenas para dev).
+    # Token para rotas /admin/*. Vazio = rotas admin desabilitadas (403). Fail-closed.
     ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "")
 
     DEBUG = _env_bool("FLASK_DEBUG")
-    HOST = os.environ.get("HOST", "0.0.0.0")
+    HOST = os.environ.get("HOST", "127.0.0.1")
     PORT = int(os.environ.get("PORT", "5000"))
     DATABASE_PATH = os.environ.get("DATABASE_PATH", "loja.db")
-    CORS_ORIGINS = os.environ.get("CORS_ORIGINS", "*")
+    # Origens CORS separadas por vírgula. Vazio = CORS desabilitado (mesma origem apenas).
+    CORS_ORIGINS = os.environ.get("CORS_ORIGINS", "")
     APP_ENV = os.environ.get("APP_ENV", "desenvolvimento")
+    # Dados de demonstração só são criados em ambiente de desenvolvimento.
+    # Senhas do seed vêm do ambiente; se ausentes, são geradas aleatoriamente e exibidas no log do boot.
+    SEED_ADMIN_PASSWORD = os.environ.get("SEED_ADMIN_PASSWORD", "")
+    SEED_DEMO_PASSWORD = os.environ.get("SEED_DEMO_PASSWORD", "")
     API_VERSION = "1.0.0"
 
 
@@ -28,8 +33,13 @@ NOME_PRODUTO_MAX = 200
 CATEGORIAS_VALIDAS = ("informatica", "moveis", "vestuario", "geral", "eletronicos", "livros")
 CATEGORIA_PADRAO = "geral"
 
-STATUS_PEDIDO_VALIDOS = ("pendente", "aprovado", "enviado", "entregue", "cancelado")
-STATUS_PEDIDO_INICIAL = "pendente"
+STATUS_PENDENTE = "pendente"
+STATUS_APROVADO = "aprovado"
+STATUS_CANCELADO = "cancelado"
+STATUS_PEDIDO_VALIDOS = (STATUS_PENDENTE, STATUS_APROVADO, "enviado", "entregue", STATUS_CANCELADO)
+STATUS_PEDIDO_INICIAL = STATUS_PENDENTE
+
+AMBIENTES_DEV = ("desenvolvimento", "development", "dev", "local")
 
 TIPO_USUARIO_PADRAO = "cliente"
 

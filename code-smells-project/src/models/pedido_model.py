@@ -1,4 +1,5 @@
 """Acesso a dados de pedidos e itens (transações explícitas, sem N+1)."""
+from src.config.settings import STATUS_APROVADO, STATUS_CANCELADO, STATUS_PENDENTE
 from src.database.connection import get_db
 
 
@@ -100,23 +101,15 @@ def resumo_vendas():
         """
         SELECT COUNT(*)                                             AS total_pedidos,
                COALESCE(SUM(total), 0)                              AS faturamento,
-               COALESCE(SUM(CASE WHEN status = 'pendente'  THEN 1 ELSE 0 END), 0) AS pendentes,
-               COALESCE(SUM(CASE WHEN status = 'aprovado'  THEN 1 ELSE 0 END), 0) AS aprovados,
-               COALESCE(SUM(CASE WHEN status = 'cancelado' THEN 1 ELSE 0 END), 0) AS cancelados
+               COALESCE(SUM(CASE WHEN status = ? THEN 1 ELSE 0 END), 0) AS pendentes,
+               COALESCE(SUM(CASE WHEN status = ? THEN 1 ELSE 0 END), 0) AS aprovados,
+               COALESCE(SUM(CASE WHEN status = ? THEN 1 ELSE 0 END), 0) AS cancelados
         FROM pedidos
-        """
+        """,
+        (STATUS_PENDENTE, STATUS_APROVADO, STATUS_CANCELADO),
     ).fetchone()
     return dict(row)
 
 
 def contar():
     return get_db().execute("SELECT COUNT(*) FROM pedidos").fetchone()[0]
-
-
-def limpar_tudo():
-    db = get_db()
-    with db:
-        db.execute("DELETE FROM itens_pedido")
-        db.execute("DELETE FROM pedidos")
-        db.execute("DELETE FROM produtos")
-        db.execute("DELETE FROM usuarios")

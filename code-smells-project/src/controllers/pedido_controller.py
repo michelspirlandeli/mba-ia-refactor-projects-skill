@@ -3,8 +3,8 @@ import logging
 
 from src.config.settings import STATUS_PEDIDO_INICIAL, STATUS_PEDIDO_VALIDOS
 from src.controllers.validators import exigir_inteiro_positivo, exigir_payload
-from src.middlewares.error_handler import NotFoundError, ValidationError
-from src.models import pedido_model, produto_model
+from src.exceptions import NotFoundError, ValidationError
+from src.models import pedido_model, produto_model, usuario_model
 from src.services import notification_service
 
 logger = logging.getLogger(__name__)
@@ -28,6 +28,9 @@ def criar(dados):
     usuario_id = dados.get("usuario_id")
     if not usuario_id:
         raise ValidationError("Usuario ID é obrigatório")
+    exigir_inteiro_positivo(usuario_id, "usuario_id")
+    if not usuario_model.existe(usuario_id):
+        raise ValidationError(f"Usuário {usuario_id} não encontrado")
     itens = _validar_itens(dados.get("itens", []))
 
     # Uma única query para todos os produtos do pedido (antes: 2 queries por item).
@@ -48,6 +51,7 @@ def criar(dados):
     except pedido_model.EstoqueInsuficiente as exc:
         raise ValidationError("Estoque insuficiente para " + produtos[exc.produto_id]["nome"])
 
+    logger.info("Pedido criado id=%s usuario_id=%s total=%.2f", pedido_id, usuario_id, total)
     notification_service.pedido_criado(pedido_id, usuario_id)
     return {"pedido_id": pedido_id, "total": total}
 
@@ -69,4 +73,5 @@ def atualizar_status(pedido_id, dados):
         raise NotFoundError("Pedido não encontrado")
 
     pedido_model.atualizar_status(pedido_id, novo_status)
+    logger.info("Pedido %s alterado para status=%s", pedido_id, novo_status)
     notification_service.status_pedido_alterado(pedido_id, novo_status)

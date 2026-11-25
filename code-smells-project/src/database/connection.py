@@ -1,10 +1,16 @@
-"""Conexão SQLite por request (flask.g), criação de schema e seed inicial."""
+"""Conexão SQLite por request (flask.g), criação de schema, seed de desenvolvimento e reset."""
+import logging
+import secrets
 import sqlite3
 
 from flask import current_app, g
 from werkzeug.security import generate_password_hash
 
-SCHEMA = """
+from src.config.settings import AMBIENTES_DEV, STATUS_PEDIDO_INICIAL, TIPO_USUARIO_PADRAO
+
+logger = logging.getLogger(__name__)
+
+SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS produtos (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     nome TEXT,
@@ -20,13 +26,13 @@ CREATE TABLE IF NOT EXISTS usuarios (
     nome TEXT,
     email TEXT,
     senha TEXT,
-    tipo TEXT DEFAULT 'cliente',
+    tipo TEXT DEFAULT '{TIPO_USUARIO_PADRAO}',
     criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS pedidos (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     usuario_id INTEGER,
-    status TEXT DEFAULT 'pendente',
+    status TEXT DEFAULT '{STATUS_PEDIDO_INICIAL}',
     total REAL,
     criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -38,6 +44,9 @@ CREATE TABLE IF NOT EXISTS itens_pedido (
     preco_unitario REAL
 );
 """
+
+# Garante email único também em bancos já existentes (criado à parte para tolerar duplicatas legadas).
+INDICE_EMAIL_UNICO = "CREATE UNIQUE INDEX IF NOT EXISTS idx_usuarios_email ON usuarios(email)"
 
 PRODUTOS_SEED = [
     ("Notebook Gamer", "Notebook potente para jogos", 5999.99, 10, "informatica"),
@@ -52,11 +61,11 @@ PRODUTOS_SEED = [
     ("Camiseta Dev", "Camiseta estampa código", 59.90, 100, "vestuario"),
 ]
 
-# Usuários de demonstração (senhas gravadas com hash).
-USUARIOS_SEED = [
-    ("Admin", "admin@loja.com", "admin123", "admin"),
-    ("João Silva", "joao@email.com", "123456", "cliente"),
-    ("Maria Santos", "maria@email.com", "senha123", "cliente"),
+# Usuários de demonstração: (nome, email, tipo). Senhas vêm do ambiente (ver Config.SEED_*_PASSWORD).
+ADMIN_SEED = ("Admin", "admin@loja.com", "admin")
+CLIENTES_SEED = [
+    ("João Silva", "joao@email.com", TIPO_USUARIO_PADRAO),
+    ("Maria Santos", "maria@email.com", TIPO_USUARIO_PADRAO),
 ]
 
 
@@ -79,21 +88,47 @@ def close_db(_exc=None):
         db.close()
 
 
+def _senha_seed(configurada, rotulo):
+    if configurada:
+        return configurada
+    gerada = secrets.token_urlsafe(12)
+    logger.warning("Seed de desenvolvimento: senha gerada para %s = %s (defina no .env para fixar)", rotulo, gerada)
+    return gerada
+
+
+def _seed_desenvolvimento(conn, config):
+    conn.executemany(
+        "INSERT INTO produtos (nome, descricao, preco, estoque, categoria) VALUES (?, ?, ?, ?, ?)",
+        PRODUTOS_SEED,
+    )
+    senha_admin = _senha_seed(config["SEED_ADMIN_PASSWORD"], ADMIN_SEED[1])
+    senha_demo = _senha_seed(config["SEED_DEMO_PASSWORD"], "clientes de demonstração")
+    usuarios = [(*ADMIN_SEED[:2], generate_password_hash(senha_admin), ADMIN_SEED[2])]
+    usuarios += [(nome, email, generate_password_hash(senha_demo), tipo) for nome, email, tipo in CLIENTES_SEED]
+    conn.executemany("INSERT INTO usuarios (nome, email, senha, tipo) VALUES (?, ?, ?, ?)", usuarios)
+
+
 def init_db(app):
-    """Cria o schema e popula dados iniciais se o banco estiver vazio."""
+    """Cria o schema e, só em desenvolvimento, popula dados de demonstração se o banco estiver vazio."""
     conn = _connect(app.config["DATABASE_PATH"])
     try:
         with conn:
             conn.executescript(SCHEMA)
-            if conn.execute("SELECT COUNT(*) FROM produtos").fetchone()[0] == 0:
-                conn.executemany(
-                    "INSERT INTO produtos (nome, descricao, preco, estoque, categoria) VALUES (?, ?, ?, ?, ?)",
-                    PRODUTOS_SEED,
-                )
-                conn.executemany(
-                    "INSERT INTO usuarios (nome, email, senha, tipo) VALUES (?, ?, ?, ?)",
-                    [(n, e, generate_password_hash(s), t) for n, e, s, t in USUARIOS_SEED],
-                )
+            try:
+                conn.execute(INDICE_EMAIL_UNICO)
+            except sqlite3.IntegrityError:
+                logger.warning("Há emails duplicados no banco; índice único não criado (unicidade só no controller)")
+            vazio = conn.execute("SELECT COUNT(*) FROM produtos").fetchone()[0] == 0
+            if vazio and app.config["APP_ENV"] in AMBIENTES_DEV:
+                _seed_desenvolvimento(conn, app.config)
     finally:
         conn.close()
     app.teardown_appcontext(close_db)
+
+
+def limpar_dados():
+    """Remove todos os registros de todas as tabelas (usado por /admin/reset-db)."""
+    db = get_db()
+    with db:
+        for tabela in ("itens_pedido", "pedidos", "produtos", "usuarios"):
+            db.execute(f"DELETE FROM {tabela}")  # nomes fixos, sem entrada do usuário

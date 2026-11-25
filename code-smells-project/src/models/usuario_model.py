@@ -1,7 +1,13 @@
 """Acesso a dados de usuários. A senha (hash) nunca sai deste módulo nas consultas públicas."""
+import sqlite3
+
 from src.database.connection import get_db
 
 CAMPOS_PUBLICOS = ("id", "nome", "email", "tipo", "criado_em")
+
+
+class EmailDuplicado(Exception):
+    pass
 
 
 def _to_public_dict(row):
@@ -23,13 +29,24 @@ def buscar_credenciais_por_email(email):
     return get_db().execute("SELECT * FROM usuarios WHERE email = ?", (email,)).fetchone()
 
 
+def existe(usuario_id):
+    return get_db().execute("SELECT 1 FROM usuarios WHERE id = ?", (usuario_id,)).fetchone() is not None
+
+
+def email_existe(email):
+    return get_db().execute("SELECT 1 FROM usuarios WHERE email = ?", (email,)).fetchone() is not None
+
+
 def criar(nome, email, senha_hash, tipo):
     db = get_db()
-    with db:
-        cursor = db.execute(
-            "INSERT INTO usuarios (nome, email, senha, tipo) VALUES (?, ?, ?, ?)",
-            (nome, email, senha_hash, tipo),
-        )
+    try:
+        with db:
+            cursor = db.execute(
+                "INSERT INTO usuarios (nome, email, senha, tipo) VALUES (?, ?, ?, ?)",
+                (nome, email, senha_hash, tipo),
+            )
+    except sqlite3.IntegrityError as exc:  # índice único idx_usuarios_email
+        raise EmailDuplicado(email) from exc
     return cursor.lastrowid
 
 

@@ -2,8 +2,8 @@
 import logging
 
 from src.config.settings import CATEGORIA_PADRAO, CATEGORIAS_VALIDAS, NOME_PRODUTO_MAX, NOME_PRODUTO_MIN
-from src.controllers.validators import exigir_numero, exigir_payload, numero_opcional
-from src.middlewares.error_handler import NotFoundError, ValidationError
+from src.controllers.validators import exigir_inteiro, exigir_numero, exigir_payload, numero_opcional, texto_opcional
+from src.exceptions import NotFoundError, ValidationError
 from src.models import produto_model
 
 logger = logging.getLogger(__name__)
@@ -20,8 +20,8 @@ def _validar_produto(dados):
     if not isinstance(nome, str):
         raise ValidationError("Nome inválido")
     preco = exigir_numero(dados["preco"], "Preço")
-    estoque = exigir_numero(dados["estoque"], "Estoque")
-    descricao = dados.get("descricao", "") or ""
+    estoque = exigir_inteiro(dados["estoque"], "Estoque")
+    descricao = texto_opcional(dados.get("descricao"), "Descrição")
     categoria = dados.get("categoria", CATEGORIA_PADRAO)
 
     if preco < 0:

@@ -16,7 +16,9 @@ def create_app(config_object=Config):
     app = Flask(__name__)
     app.config.from_object(config_object)
 
-    CORS(app, origins=app.config["CORS_ORIGINS"])
+    origens = [o.strip() for o in app.config["CORS_ORIGINS"].split(",") if o.strip()]
+    if origens:
+        CORS(app, origins=origens)
     init_db(app)
     register_routes(app)
     register_error_handlers(app)

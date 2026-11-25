@@ -117,6 +117,12 @@ Objetivo: eliminar os findings e reestruturar para MVC **preservando o comportam
    status codes de sucesso. Exceções permitidas **apenas** quando o comportamento original é uma
    falha de segurança (ex.: endpoint que executa SQL arbitrário, resposta que vaza senha/secret) —
    documente cada exceção no resumo final.
+   - **Seguro por padrão**: ao proteger rotas, a proteção é *fail-closed* (sem token/segredo
+     configurado → 403/401). Nunca deixe "aberto quando a variável não estiver definida";
+     se o contrato legado sem auth for necessário, ele deve ser um *opt-out* explícito de dev
+     (ex.: `AUTH_REQUIRED=false`) e logar um aviso no boot.
+   - **Autenticação ≠ autorização**: além de exigir token, verifique se o usuário pode agir sobre
+     *aquele* recurso (dono / role), e se fluxos que reutilizam conta existente conferem a senha.
 5. **Valide** (obrigatório, não declare sucesso sem evidência):
    1. Instale dependências se necessário (venv / `npm install`).
    2. Faça o boot da aplicação em background, aguarde a porta responder.

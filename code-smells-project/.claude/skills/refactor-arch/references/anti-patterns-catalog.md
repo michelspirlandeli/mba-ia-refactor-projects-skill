@@ -34,7 +34,7 @@ e **para baixo** se mitigar (ex.: rota só acessível em dev). Justifique na des
 - **Playbook**: P-02.
 
 ### AP-03 — Execução arbitrária / endpoint administrativo sem autenticação
-- **Sinais**: rota que recebe SQL/código do cliente (`dados.get("sql")` → `execute(query)`), `eval(`, `exec(`, `child_process.exec(req...`; rotas `/admin/*` destrutivas (reset/delete em massa, relatórios financeiros) sem qualquer verificação de auth.
+- **Sinais**: rota que recebe SQL/código do cliente (`dados.get("sql")` → `execute(query)`), `eval(`, `exec(`, `child_process.exec(req...`; rotas `/admin/*` destrutivas (reset/delete em massa, relatórios financeiros) sem qualquer verificação de auth; proteção **fail-open** (`if not ADMIN_TOKEN: return next()` / auth desligada por padrão); token validado sem checar **autorização** (usuário comum alterando/deletando outro usuário ou promovendo a si mesmo).
 - **Playbook**: P-03.
 
 ### AP-04 — God Class / God File
@@ -60,11 +60,11 @@ e **para baixo** se mitigar (ex.: rota só acessível em dev). Justifique na des
 - **Playbook**: P-08.
 
 ### AP-09 — Hash de senha fraco / armazenamento em texto puro / auth falsa
-- **Sinais**: senha gravada sem hash; `hashlib.md5(`, `sha1(`; "hash" caseiro (`Buffer.from(pwd).toString('base64')` em loop); comparação `senha = '<input>'` no SQL; token fake (`'fake-jwt-token-' + id`); senha default quando ausente (`p || "123456"`).
+- **Sinais**: senha gravada sem hash; `hashlib.md5(`, `sha1(`; "hash" caseiro (`Buffer.from(pwd).toString('base64')` em loop); comparação `senha = '<input>'` no SQL; token fake (`'fake-jwt-token-' + id`); senha default quando ausente (`p || "123456"`); fluxo que reutiliza conta existente pelo email **sem conferir a senha** (checkout/login "por email"); login sem limite de tentativas; política de senha mínima < 8.
 - **Playbook**: P-09.
 
 ### AP-10 — Integridade de dados / transações ausentes
-- **Sinais**: várias escritas relacionadas sem transação (pedido + itens + baixa de estoque; matrícula + pagamento); delete de pai deixando filhos órfãos (comentário "ficaram sujos"); erros de callback ignorados (`(err) => { res.send(...) }` sem checar `err`).
+- **Sinais**: várias escritas relacionadas sem transação (pedido + itens + baixa de estoque; matrícula + pagamento); delete de pai deixando filhos órfãos (comentário "ficaram sujos"); erros de callback ignorados (`(err) => { res.send(...) }` sem checar `err`); ausência de `UNIQUE` em email / pares que não podem repetir (matrícula usuário+curso) com checagem só em código (corrida); FK lógica não validada (pedido para `usuario_id` inexistente); efeito externo (pagamento) executado **antes** das validações que ainda podem falhar.
 - **Playbook**: P-10.
 
 ## MEDIUM
@@ -135,4 +135,4 @@ Verifique a versão da stack detectada na Fase 1.
 2. Leia cada handler/rota para os estruturais (AP-03, 04, 06, 07, 10, 12, 16).
 3. Deduplicate: mesmo AP + mesmo arquivo → um finding com várias linhas.
 4. Um mesmo trecho pode gerar findings distintos se violar APs diferentes (ex.: SQL injection e God File).
-5. Mínimo esperado por projeto: ≥ 5 findings e ≥ 1 CRITICAL/HIGH — se não atingir, revise a varredura antes de concluir que o projeto está limpo.
+5. Em código legado espera-se ≥ 5 findings e ≥ 1 CRITICAL/HIGH — se não atingir, revise a varredura antes de concluir que o projeto está limpo. Em **re-auditoria** de código já refatorado, zero CRITICAL/HIGH é um resultado válido quando a varredura foi completa: nunca invente findings para atingir um mínimo.
