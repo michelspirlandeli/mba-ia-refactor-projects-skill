@@ -1,4 +1,6 @@
+const crypto = require('crypto');
 const sqlite3 = require('sqlite3');
+const { PAYMENT_STATUS } = require('../config');
 
 const SCHEMA = [
     'CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, name TEXT, email TEXT, pass TEXT)',
@@ -6,6 +8,19 @@ const SCHEMA = [
     'CREATE TABLE IF NOT EXISTS enrollments (id INTEGER PRIMARY KEY, user_id INTEGER, course_id INTEGER)',
     'CREATE TABLE IF NOT EXISTS payments (id INTEGER PRIMARY KEY, enrollment_id INTEGER, amount REAL, status TEXT)',
     'CREATE TABLE IF NOT EXISTS audit_logs (id INTEGER PRIMARY KEY, action TEXT, created_at DATETIME)',
+];
+
+// Integridade: um email por usuário e uma matrícula por (usuário, curso).
+// Criados à parte para não impedir o boot de um banco legado que já tenha duplicatas.
+const UNIQUE_INDEXES = [
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email)',
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_enrollments_user_course ON enrollments(user_id, course_id)',
+];
+
+const DEMO_USER = Object.freeze({ name: 'Leonan', email: 'leonan@fullcycle.com.br' });
+const DEMO_COURSES = [
+    { title: 'Clean Architecture', price: 997.0 },
+    { title: 'Docker', price: 497.0 },
 ];
 
 /**
@@ -62,29 +77,51 @@ class Database {
     }
 }
 
-async function initSchema(db) {
+async function initSchema(db, logger) {
     for (const statement of SCHEMA) {
         await db.run(statement);
     }
+    for (const statement of UNIQUE_INDEXES) {
+        try {
+            await db.run(statement);
+        } catch (err) {
+            logger.warn(`Índice único não criado (dados duplicados legados): ${err.message}`);
+        }
+    }
 }
 
-async function seed(db, passwordService) {
+function demoPassword(configured, logger) {
+    if (configured) return configured;
+    const generated = crypto.randomBytes(9).toString('base64url');
+    logger.warn(`Seed de desenvolvimento: senha gerada para ${DEMO_USER.email} = ${generated} (defina SEED_USER_PASSWORD para fixar)`);
+    return generated;
+}
+
+async function seed(db, { passwordService, seedUserPassword, logger }) {
     const { count } = await db.get('SELECT COUNT(*) AS count FROM courses');
     if (count > 0) return;
 
+    const passwordHash = await passwordService.hash(demoPassword(seedUserPassword, logger));
     await db.transaction(async () => {
-        const passwordHash = await passwordService.hash('123');
-        await db.run('INSERT INTO users (name, email, pass) VALUES (?, ?, ?)', ['Leonan', 'leonan@fullcycle.com.br', passwordHash]);
-        await db.run('INSERT INTO courses (title, price, active) VALUES (?, ?, ?), (?, ?, ?)', ['Clean Architecture', 997.0, 1, 'Docker', 497.0, 1]);
-        await db.run('INSERT INTO enrollments (user_id, course_id) VALUES (?, ?)', [1, 1]);
-        await db.run('INSERT INTO payments (enrollment_id, amount, status) VALUES (?, ?, ?)', [1, 997.0, 'PAID']);
+        const { lastID: userId } = await db.run(
+            'INSERT INTO users (name, email, pass) VALUES (?, ?, ?)', [DEMO_USER.name, DEMO_USER.email, passwordHash]);
+        const courseIds = [];
+        for (const { title, price } of DEMO_COURSES) {
+            const { lastID } = await db.run('INSERT INTO courses (title, price, active) VALUES (?, ?, 1)', [title, price]);
+            courseIds.push(lastID);
+        }
+        const [firstCourse] = DEMO_COURSES;
+        const { lastID: enrollmentId } = await db.run(
+            'INSERT INTO enrollments (user_id, course_id) VALUES (?, ?)', [userId, courseIds[0]]);
+        await db.run('INSERT INTO payments (enrollment_id, amount, status) VALUES (?, ?, ?)',
+            [enrollmentId, firstCourse.price, PAYMENT_STATUS.PAID]);
     });
 }
 
-async function createDatabase({ filename, passwordService }) {
+async function createDatabase({ filename, passwordService, seedDemoData, seedUserPassword, logger }) {
     const db = new Database(filename);
-    await initSchema(db);
-    await seed(db, passwordService);
+    await initSchema(db, logger);
+    if (seedDemoData) await seed(db, { passwordService, seedUserPassword, logger });
     return db;
 }
 

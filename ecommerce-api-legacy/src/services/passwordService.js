@@ -15,8 +15,10 @@ async function hash(password) {
 async function verify(password, stored) {
     const [salt, expected] = String(stored).split(':');
     if (!salt || !expected) return false;
+    const expectedBuf = Buffer.from(expected, 'hex');
+    if (expectedBuf.length !== KEY_LENGTH) return false;
     const derived = await scrypt(password, salt, KEY_LENGTH);
-    return crypto.timingSafeEqual(Buffer.from(expected, 'hex'), derived);
+    return crypto.timingSafeEqual(expectedBuf, derived);
 }
 
 module.exports = { hash, verify };

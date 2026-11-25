@@ -7,6 +7,11 @@ class UserModel {
         return this.db.get('SELECT id, name, email FROM users WHERE email = ?', [email]);
     }
 
+    // Inclui o hash da senha: uso exclusivo da autenticação, nunca serializar na resposta.
+    findCredentialsByEmail(email) {
+        return this.db.get('SELECT id, name, email, pass FROM users WHERE email = ?', [email]);
+    }
+
     findById(id) {
         return this.db.get('SELECT id, name, email FROM users WHERE id = ?', [id]);
     }

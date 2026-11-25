@@ -5,6 +5,8 @@ const asyncHandler = (fn) => (req, res, next) => Promise.resolve(fn(req, res, ne
 
 const notFoundHandler = (req, res, next) => next(new NotFoundError(`Cannot ${req.method} ${req.path}`));
 
+const isClientError = (status) => Number.isInteger(status) && status >= 400 && status < 500;
+
 // Error handler central. Mantém o formato de erro do projeto original (texto puro).
 const createErrorHandler = (logger) => (err, req, res, next) => {
     if (res.headersSent) return next(err);
@@ -14,6 +16,11 @@ const createErrorHandler = (logger) => (err, req, res, next) => {
     }
     if (err.type === 'entity.parse.failed') {
         return res.status(400).send('Bad Request');
+    }
+    // Demais erros 4xx do body-parser (413 payload grande, 415 charset inválido...) são erro do cliente.
+    if (isClientError(err.status) && err.expose) {
+        logger.warn(`Requisição rejeitada ${req.method} ${req.path}: ${err.status} ${err.message}`);
+        return res.status(err.status).send(err.message);
     }
 
     logger.error(`Erro não tratado em ${req.method} ${req.path}: ${err.stack || err}`);

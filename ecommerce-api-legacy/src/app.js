@@ -5,7 +5,6 @@ const { createDatabase } = require('./database/connection');
 const { createLogger } = require('./services/logger');
 const passwordService = require('./services/passwordService');
 const PaymentService = require('./services/paymentService');
-const CacheService = require('./services/cacheService');
 const UserModel = require('./models/userModel');
 const CourseModel = require('./models/courseModel');
 const EnrollmentModel = require('./models/enrollmentModel');
@@ -25,7 +24,13 @@ const { notFoundHandler, createErrorHandler } = require('./middlewares/errorHand
  */
 async function createApp(appConfig = config) {
     const logger = createLogger(appConfig.logLevel);
-    const db = await createDatabase({ filename: appConfig.dbPath, passwordService });
+    const db = await createDatabase({
+        filename: appConfig.dbPath,
+        passwordService,
+        seedDemoData: appConfig.seedDemoData,
+        seedUserPassword: appConfig.seedUserPassword,
+        logger,
+    });
 
     const models = {
         userModel: new UserModel(db),
@@ -34,10 +39,9 @@ async function createApp(appConfig = config) {
         paymentModel: new PaymentModel(db),
         auditLogModel: new AuditLogModel(db),
     };
-    const paymentService = new PaymentService({ gatewayKey: appConfig.paymentGatewayKey, logger });
-    const cacheService = new CacheService();
+    const paymentService = new PaymentService({ logger });
 
-    const checkoutController = new CheckoutController({ db, ...models, paymentService, passwordService, cacheService, logger });
+    const checkoutController = new CheckoutController({ db, ...models, paymentService, passwordService, logger });
     const reportController = new ReportController(models);
     const userController = new UserController({ db, ...models, logger });
     const requireAdmin = createRequireAdmin({ adminToken: appConfig.adminToken, logger });

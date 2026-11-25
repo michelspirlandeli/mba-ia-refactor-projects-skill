@@ -7,12 +7,12 @@ const safeEqual = (a, b) => {
     return bufA.length === bufB.length && crypto.timingSafeEqual(bufA, bufB);
 };
 
-// Protege rotas administrativas com o header X-Admin-Token quando ADMIN_TOKEN está configurado.
-// Sem ADMIN_TOKEN as rotas ficam abertas (compatibilidade com o contrato legado — apenas para dev).
+// Protege rotas administrativas com o header X-Admin-Token.
+// Fail-closed: sem ADMIN_TOKEN configurado as rotas admin ficam desabilitadas (403).
 const createRequireAdmin = ({ adminToken, logger }) => (req, res, next) => {
     if (!adminToken) {
-        logger.warn(`Rota administrativa ${req.method} ${req.path} acessada sem ADMIN_TOKEN configurado`);
-        return next();
+        logger.warn(`Rota administrativa ${req.method} ${req.path} bloqueada: ADMIN_TOKEN não configurado`);
+        return next(new ForbiddenError('Rotas administrativas desabilitadas: configure ADMIN_TOKEN'));
     }
     if (!safeEqual(req.get('X-Admin-Token') || '', adminToken)) {
         return next(new ForbiddenError('Acesso administrativo negado'));

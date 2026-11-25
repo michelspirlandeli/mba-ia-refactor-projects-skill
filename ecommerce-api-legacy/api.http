@@ -1,6 +1,8 @@
 @baseUrl = http://localhost:3000
+# Valor de ADMIN_TOKEN configurado no ambiente da API
+@adminToken = troque-pelo-admin-token
 
-### Checkout - sucesso
+### Checkout - sucesso (novo usuário)
 POST {{baseUrl}}/api/checkout
 Content-Type: application/json
 
@@ -19,17 +21,27 @@ Content-Type: application/json
 {
   "usr": "João",
   "eml": "joao@teste.com",
-  "pwd": "123",
+  "pwd": "senhaforte",
   "c_id": 1,
   "card": "5111222233334444"
 }
 
-### Relatório financeiro administrativo
+### Checkout - usuário existente precisa da senha correta (senão 401)
+POST {{baseUrl}}/api/checkout
+Content-Type: application/json
+
+{
+  "usr": "Guilherme",
+  "eml": "gui@fullcycle.com.br",
+  "pwd": "senhaforte",
+  "c_id": 1,
+  "card": "4111222233334444"
+}
+
+### Relatório financeiro administrativo (sem ADMIN_TOKEN configurado → 403)
 GET {{baseUrl}}/api/admin/financial-report
+X-Admin-Token: {{adminToken}}
 
 ### Deletar usuário
 DELETE {{baseUrl}}/api/users/1
-
-### Rotas admin com ADMIN_TOKEN configurado (opcional)
-GET {{baseUrl}}/api/admin/financial-report
-X-Admin-Token: <valor de ADMIN_TOKEN>
+X-Admin-Token: {{adminToken}}
