@@ -1,0 +1,199 @@
+ ▐▛███▛█   Claude Code v2.1.332
+▝▜██████▀  Opus 5.5 · Claude Pro
+ ▝▝   ▝▝   D:\Dev\courses\MBA em Engenharia de Software com IA\04 - Desafio…
+
+
+❯ /refactor-arch                                                                
+
+● Starting Phase 1 — reading the analysis reference and listing the project
+  files.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● The project already has an MVC layout from commit fa71211, so this run is a
+  re-audit. Reading every source file and the manifests.
+
+  Read 1 file, ran 2 shell commands (ctrl+o to expand)
+
+● Phase 1 is done. Now running the catalog's objective detection signals across
+  app.py and src/.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Grep hits on f-strings are internal placeholders and clauses, with values
+  bound as parameters, so they aren't SQL injection. I'm confirming the
+  structural findings with Flask's test client against a throwaway scratchpad
+  DB, leaving the project untouched. · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● All suspected gaps are confirmed. Writing the report to
+  ../reports/audit-code-smells-project.md. I'm leaving the existing
+  audit-project-1.md, the original pre-refactor audit, as it is.
+
+● Write(D:\Dev\courses\MBA em Engenharia de Software com IA\04 - Desafios 
+       Técnicos - MBA 
+       IA\mba-ia-refactor-projects-skill\reports\audit-code-smells-project.md)
+  ⎿  Wrote 129 lines to D:\Dev\courses\MBA em Engenharia de Software com 
+     IA\04 - Desafios Técnicos - MBA 
+     IA\mba-ia-refactor-projects-skill\reports\audit-code-smells-project.md
+       1 ================================
+       2 ARCHITECTURE AUDIT REPORT
+       3 ================================
+       4 Project: code-smells-project
+       5 Stack:   Python 3.12 (local) + Flask 3.1.1 (SQLite via sqlite3,
+         SQL manual)
+       6 Files:   28 analyzed | ~962 lines of code
+       7 Date:    2026-11-25
+       8 
+       9 > Re-auditoria: o projeto já foi refatorado para MVC (commit `fa
+     … +121 lines (~8 KB) (ctrl+o to expand)
+
+● ================================
+  PHASE 1: PROJECT ANALYSIS
+  ================================
+  Language:      Python 3.12.0 (local)
+  Framework:     Flask 3.1.1
+  Dependencies:  flask==3.1.1, flask-cors==5.0.1, werkzeug.security (via Flask),
+  sqlite3 (stdlib)
+  Domain:        E-commerce (produtos, usuarios, pedidos, itens_pedido, 
+  relatório de vendas)
+  Architecture:  MVC já aplicado (commit fa71211): 
+  config/models/controllers/services/views/middlewares + create_app
+  Source files:  28 files analyzed (~962 lines)
+  DB tables:     produtos, usuarios, pedidos, itens_pedido
+  Entry point:   app.py (python app.py, porta 5000; seed automático no 1º boot)
+  Endpoints:     18 routes mapped
+  ================================
+
+  Endpoints: GET /, GET /health, POST /admin/reset-db, GET|POST /produtos, GET 
+  /produtos/busca, GET|PUT|DELETE /produtos/<id>, GET|POST /usuarios, GET 
+  /usuarios/<id>, POST /login, GET|POST /pedidos, GET /pedidos/usuario/<id>, PUT
+  /pedidos/<id>/status, GET /relatorios/vendas.
+
+  ================================
+  ARCHITECTURE AUDIT REPORT
+  ================================
+  Project: code-smells-project
+  Stack:   Python 3.12 (local) + Flask 3.1.1 (SQLite via sqlite3, SQL manual)
+  Files:   28 analyzed | ~962 lines of code
+  Date:    2026-11-25
+
+  ## Summary
+  CRITICAL: 1 | HIGH: 2 | MEDIUM: 1 | LOW: 4
+
+  #1 [CRITICAL] Endpoint administrativo destrutivo sem autenticação por padrão 
+  (AP-03)
+
+  File: src/middlewares/auth.py:16-20 · src/config/settings.py:13-14 ·
+  .env.example:4
+  - O que acontece: require_admin é fail-open. Quando ADMIN_TOKEN está vazio,
+    que é o padrão, a rota roda normalmente.
+  - Confirmado: POST /admin/reset-db sem header respondeu 200 e apagou as 4
+    tabelas.
+  - Correção: o middleware passa a ser fail-closed (403 sem token), ou fica
+    aberto só com APP_ENV de desenvolvimento explícito (P-03).
+
+  #2 [HIGH] Credenciais em texto claro no seed (AP-02)
+
+  File: src/database/connection.py:55-60, 93-96
+  - O que acontece: ("Admin", "admin@loja.com", "admin123", "admin") e mais duas
+    senhas literais são criadas como seed em qualquer ambiente.
+  - Por que HIGH e não CRITICAL: as senhas são gravadas com hash e o login hoje
+    não concede privilégios.
+  - Correção: seed só em dev, com a senha do admin vinda do ambiente (P-02).
+
+  #3 [HIGH] Integridade de dados não garantida (AP-10)
+
+  File: src/database/connection.py:18-39 ·
+  src/controllers/usuario_controller.py:31-43 ·
+  src/controllers/pedido_controller.py:28-30
+  - O que acontece: o schema não tem UNIQUE(email) nem FK.
+  - Confirmado: e-mail duplicado foi aceito duas vezes (201/201), e um pedido
+    para usuario_id: 9999, que não existe, foi aceito com 201 e baixou o
+    estoque.
+  - Correção: checar e-mail e usuário no controller e criar CREATE UNIQUE INDEX 
+    IF NOT EXISTS (P-10).
+
+  #4 [MEDIUM] Validação de tipos incompleta resulta em 500 (AP-12)
+
+  File: usuario_controller.py:33-39 · pedido_controller.py:28-30 ·
+  produto_controller.py:23-24 (em src/controllers/)
+  - Confirmado: estas entradas retornam 500 em vez de 400: nome: ["x"], senha: 
+    123, usuario_id: {"a":1}, descricao: {...}.
+  - Além disso, estoque: 1.5 é aceito e grava estoque fracionado.
+  - Correção: validadores de texto e inteiro (P-12).
+
+  #5 [LOW] Responsabilidades fora da camada correta (AP-07)
+
+  File: src/controllers/validators.py:2 ·
+  src/controllers/sistema_controller.py:4, 14, 36-37 ·
+  src/models/pedido_model.py:116-122
+  - As exceções de domínio estão em middlewares/.
+  - O controller lê current_app.
+  - pedido_model.limpar_tudo() apaga tabelas de outros domínios.
+  - Correção: criar src/exceptions.py, passar config como parâmetro e mover o
+    reset para database/ (P-07).
+
+  #6 [LOW] Defaults de configuração permissivos (AP-15)
+
+  File: src/config/settings.py:17, 20
+  - HOST tem default "0.0.0.0" e CORS_ORIGINS tem default "*".
+  - Correção: defaults seguros, com abertura via env (P-02).
+
+  #7 [LOW] Status como strings literais duplicadas (AP-17)
+
+  File: src/models/pedido_model.py:103-105 ·
+  src/services/notification_service.py:12-14 · src/database/connection.py:23, 29
+  - 'pendente', 'aprovado' e 'cancelado' estão repetidos, embora as constantes
+    existam em settings.py.
+  - Correção: constantes nomeadas (P-15).
+
+  #8 [LOW] Logger declarado e não utilizado (AP-20)
+
+  File: src/controllers/pedido_controller.py:2, 10
+  - Pedidos e mudanças de status não geram log de auditoria.
+  - Correção: adicionar logger.info (P-15).
+
+  Deprecated APIs
+
+  ┌───────────┬───────────────────────────────────────────┬─────────────────┐
+  │ File:Line │                Deprecated                 │     Modern      │
+  │           │                                           │   replacement   │
+  ├───────────┼───────────────────────────────────────────┼─────────────────┤
+  │ —         │ Nenhuma API deprecated detectada para     │ —               │
+  │           │ Python 3.12 / Flask 3.1.1                 │                 │
+  └───────────┴───────────────────────────────────────────┴─────────────────┘
+
+  Architecture Overview (current → target)
+
+  - Current: o MVC já está correto, com config isolada, SQL parametrizado, rotas
+    finas, error handler central e create_app. Faltam defaults seguros,
+    integridade e validação de tipos.
+  - Target: o mesmo MVC, com ajustes pontuais e sem reestruturar o projeto.
+  - Falsos positivos descartados: as f-strings em pedido_model.py:39 e
+    produto_model.py:27, 71 montam apenas placeholders ? ou cláusulas internas,
+    então não há SQL injection.
+  - Fora do escopo (decisão de produto): GET /usuarios e GET /relatorios/vendas
+    são públicos e expõem e-mails e faturamento. Fechar isso quebraria o
+    contrato.
+
+  ================================
+  Total: 8 findings
+  ================================
+
+  O relatório foi salvo em ../reports/audit-code-smells-project.md. Deixei como
+  está o audit-project-1.md, que é a auditoria original de antes da refatoração.
+  Os findings #1, #3 e #4 foram confirmados com requisições a um banco
+  descartável no scratchpad, sem tocar no projeto.
+
+  Para a Fase 3: a correção do #1 muda o contrato. Sem ADMIN_TOKEN definido,
+  /admin/reset-db passa a responder 403 em vez de 200. As correções do #3 e #4
+  só trocam respostas de erro (de 201/500 para 400). Nenhum status de sucesso
+  muda.
+
+  Phase 2 complete. Proceed with refactoring (Phase 3)? [y/n]
+
+✻ Brewed for 2m 25s · done 4:41 PM
+
+※ recap: I ran the refactor-arch skill again on code-smells-project and saved a new audit with 8 findings, the worst being the admin reset route that is open by default. Next, reply y to start the Phase 3 fixes, or n to keep just the report. (turn off recaps in /config)

@@ -1,0 +1,221 @@
+ ▐▛███▛█   Claude Code v2.1.332
+▝▜██████▀  Opus 5.5 · Claude Pro
+ ▝▝   ▝▝   D:\Dev\courses\MBA em Engenharia de Software com IA\04 - Desafio…
+
+
+❯ /refactor-arch                                                                
+
+● Vou começar pela Fase 1. Primeiro, a referência de análise e a listagem de
+  arquivos.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● O projeto já está em camadas (refatorado no commit bb88f34). Vou ler todo o
+  código-fonte atual para analisar e auditar o estado presente.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Agora o catálogo e o template para a Fase 2.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Vou rodar os greps objetivos do catálogo e testar alguns casos de borda de
+  validação contra a app em execução (somente leitura — nenhum arquivo é
+  alterado).
+
+  Ran 1 shell command, did not run 1 other call (ctrl+o to expand)
+  ⎿  $ cd "D:/Dev/courses/MBA em Engenharia de Software com IA/04 - Desafios Técnicos - MBA IA/mba-ia-refactor-projects-skill/ecommerce-api-legacy" && (PORT=3917 node src/server.js > "$TEMP/p1.log" 2>&1 &) ; for i in 1 2 3 4 5 6 7 8 9 10; do curl -s localhost:3917/x >/dev/null && break; sleep 0.5; done
+     …
+  ⎿  1 action blocked by auto mode
+     │ Auto mode: [Destructive or Unwanted Actions]
+
+● Provavelmente foi o taskkill de todos os processos node. Vou repetir
+  encerrando apenas o processo que eu iniciar (por PID).
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Confirmei no checkout com senha errada para e-mail existente (retorna 200), no
+  pwd numérico (pagamento autorizado e depois 500), no usr gravado como
+  "[object Object]" e no charset inválido (500). · summary
+
+● Write(D:\Dev\courses\MBA em Engenharia de Software com IA\04 - Desafios 
+       Técnicos - MBA 
+       IA\mba-ia-refactor-projects-skill\reports\audit-ecommerce-api-legacy.md)
+  ⎿  Wrote 83 lines to D:\Dev\courses\MBA em Engenharia de Software com 
+     IA\04 - Desafios Técnicos - MBA IA\mba-ia-refactor-projects-skill\repo
+     rts\audit-ecommerce-api-legacy.md
+       1 ================================
+       2 ARCHITECTURE AUDIT REPORT
+       3 ================================
+       4 Project: ecommerce-api-legacy
+       5 Stack:   JavaScript (Node.js v20.20.1 local) + Express ^4.18.2 (
+         SQLite via sqlite3 ^5.1.6, in-memory)
+       6 Files:   21 analyzed | ~563 lines of code
+       7 Date:    2026-11-25
+       8 
+       9 > Contexto: esta é uma **re-auditoria** do código já reestrutura
+     … +75 lines (~7 KB) (ctrl+o to expand)
+
+● ================================
+  PHASE 1: PROJECT ANALYSIS
+  ================================
+  Language:      JavaScript (Node.js v20.20.1 local; sem "engines" declarado)
+  Framework:     Express ^4.18.2
+  Dependencies:  express ^4.18.2, sqlite3 ^5.1.6 (stdlib crypto para 
+  scrypt/timingSafeEqual)
+  Domain:        LMS com checkout (users, courses, enrollments, payments, 
+  audit_logs)
+  Architecture:  MVC / camadas adequado (já refatorado em bb88f34): config, 
+  models, controllers, services, routes, middlewares e composition root com DI
+  Source files:  21 files analyzed (~563 lines)
+  DB tables:     users, courses, enrollments, payments, audit_logs
+  Entry point:   src/server.js (npm start, porta 3000; seed automático em SQLite
+  :memory:)
+  Endpoints:     3 routes mapped
+  ================================
+
+  Contrato HTTP: POST /api/checkout → 200 · GET /api/admin/financial-report →
+  200 · DELETE /api/users/:id → 200
+
+  Observação: este projeto já foi reestruturado em MVC, então esta é uma
+  re-auditoria do código atual. Não sobrou nenhum CRITICAL, mas há falhas reais
+  no checkout e no middleware admin. Confirmei várias delas subindo a aplicação
+  numa porta de teste e mandando requisições.
+
+  ================================
+  ARCHITECTURE AUDIT REPORT
+  ================================
+  Project: ecommerce-api-legacy
+  Stack:   JavaScript (Node.js v20.20.1) + Express ^4.18.2 (SQLite via sqlite3 
+  ^5.1.6, in-memory)
+  Files:   21 analyzed | ~563 lines of code
+  Date:    2026-11-25
+
+  ## Summary
+  CRITICAL: 0 | HIGH: 3 | MEDIUM: 3 | LOW: 2
+
+  #1 [HIGH] Endpoint administrativo sem autenticação por padrão (AP-03)
+
+  File: src/middlewares/requireAdmin.js:12-16 · src/config/index.js:6 ·
+  src/routes/adminRoutes.js:7, 11
+  Description: O middleware deixa passar quando falha (fail-open). Com
+  ADMIN_TOKEN vazio, que é o default, ele só registra um aviso e chama next().
+  Testado: DELETE /api/users/1 sem header retornou 200. Baixei de CRITICAL para
+  HIGH porque existe um mecanismo de token, só que é opcional.
+  Impact: Qualquer pessoa consegue ler o faturamento e apagar usuários se o
+  deploy esquecer de configurar a variável.
+  Recommendation: Negar por padrão (403) quando não houver token, com opt-in
+  explícito para dev (P-03).
+
+  #2 [HIGH] Autenticação falsa no checkout de usuário existente (AP-09)
+
+  File: src/controllers/checkoutController.js:26-39 ·
+  src/services/passwordService.js:15-20
+  Description: Quando o e-mail já existe, o pwd é ignorado. A função verify
+  existe, mas nunca é chamada. Testado: checkout com leonan@… e pwd: "errada"
+  retornou 200 enrollment_id: 4.
+  Impact: Quem souber o e-mail de alguém consegue criar matrículas e cobranças
+  em nome dessa pessoa.
+  Recommendation: Validar a senha com passwordService.verify e responder 401 se
+  falhar (P-09).
+
+  #3 [HIGH] Integridade: pagamento antes de validar, duplicidades sem restrição 
+  (AP-10)
+
+  File: src/controllers/checkoutController.js:26, 33-36, 39-41 ·
+  src/database/connection.js:4, 6
+  Description:
+  - (a) O pagamento é autorizado antes do hash da senha. Com pwd: 123 o log
+    mostra Pagamento PAID e logo depois a requisição dá 500.
+  - (b) users.email não tem UNIQUE e a checagem do e-mail fica fora da
+    transação, então duas requisições simultâneas criam usuários duplicados.
+  - (c) O mesmo usuário foi matriculado e cobrado duas vezes no mesmo curso
+    (enrollment_id 4 e 5).
+    Impact: Cobrança indevida ou duplicada e dados inconsistentes.
+    Recommendation: Fazer toda a validação e o hash antes de autorizar o
+    pagamento, adicionar UNIQUE(email) e UNIQUE(user_id, course_id), e responder
+    409 para matrícula repetida (P-10).
+
+  #4 [MEDIUM] Validação de tipos ausente (AP-12)
+
+  File: src/controllers/checkoutController.js:12-17
+  Description: Como String(...) é aplicado antes das regex, tipos errados
+  passam:
+  - usr: {"a":1} foi gravado como "[object Object]";
+  - eml em forma de array foi aceito;
+  - pwd numérico gera 500.
+
+  Também não há tamanho mínimo de senha.
+  Impact: Dados corrompidos ficam salvos e o cliente recebe 500 por input
+  inválido.
+  Recommendation: Checar typeof === 'string' e limites de tamanho, respondendo
+  400 (P-12).
+
+  #5 [MEDIUM] Error handler ignora erros 4xx do body-parser (AP-13)
+
+  File: src/middlewares/errorHandler.js:15-20
+  Description: Só entity.parse.failed é tratado. Charset inválido (415) e
+  payload acima de 100 KB (413) viram 500. Testado com charset=latin9: retornou
+  500 Erro interno com o stack completo no log.
+  Impact: Erros do cliente aparecem como falhas do servidor e poluem logs e
+  alertas.
+  Recommendation: Respeitar o err.status 4xx desses erros (P-13).
+
+  #6 [MEDIUM] Credencial fixa no seed, que roda em qualquer ambiente (AP-02)
+
+  File: src/database/connection.js:71-81
+  Description: O seed cria leonan@… com senha '123' sempre que o banco está
+  vazio, inclusive com DB_PATH apontando para arquivo. Baixei para MEDIUM porque
+  a senha é salva com hash e o banco padrão é em memória.
+  Impact: Fica uma conta com senha trivial e conhecida em ambientes reais.
+  Recommendation: Rodar o seed só em dev e tirar a senha do código (P-02).
+
+  #7 [LOW] Código morto / cache sem leitura (AP-20)
+
+  File: src/services/cacheService.js:3-11 ·
+  src/controllers/checkoutController.js:46 · src/services/paymentService.js:8 ·
+  src/database/connection.js:60-62
+  Description:
+  - O cache é escrito a cada checkout, mas get nunca é chamado, então o Map
+    cresce sem limite.
+  - gatewayKey não é usado.
+  - close() não é usado e não há encerramento limpo da aplicação.
+
+  Recommendation: Remover o cache e fechar o banco ao receber SIGTERM/SIGINT
+  (P-15).
+
+  #8 [LOW] Magic numbers/strings no seed (AP-17)
+
+  File: src/database/connection.js:79-80
+  Description: Os IDs [1, 1] e [1, 997.0, 'PAID'] estão fixos, em vez de usar
+  lastID e PAYMENT_STATUS.PAID.
+  Recommendation: Usar os IDs retornados pelos inserts e as constantes de config
+  (P-15).
+
+  Deprecated APIs
+
+  Nenhuma API deprecated encontrada para Node 20, Express 4.18 e sqlite3 5. O
+  sqlite3 já está encapsulado em Promises e não há var nem new Buffer.
+
+  Architecture Overview (current → target)
+
+  - Current: MVC adequado, com DI, SQL parametrizado e error handler central. Os
+    problemas restantes são de segurança e integridade no checkout e no admin.
+  - Target: manter a estrutura e fazer correções pontuais em requireAdmin,
+    checkoutController, errorHandler e connection.js (schema e seed), além de
+    remover o código morto.
+
+  ================================
+  Total: 8 findings
+  ================================
+
+  Relatório salvo em ../reports/audit-ecommerce-api-legacy.md. Não alterei o
+  audit-project-2.md que já existia. Nenhum arquivo do projeto foi modificado.
+
+  Mudanças de contrato que a Fase 3 traria, todas por segurança: rotas admin
+  passam a responder 403 sem token, checkout de usuário existente com senha
+  errada passa a responder 401 e matrícula repetida passa a responder 409.
+
+  Phase 2 complete. Proceed with refactoring (Phase 3)? [y/n]
+
+✻ Cogitated for 2m 18s · done 4:27 PM

@@ -1,0 +1,191 @@
+ ▐▛███▛█   Claude Code v2.1.332
+▝▜██████▀  Opus 5.5 · Claude Pro
+ ▝▝   ▝▝   D:\Dev\courses\MBA em Engenharia de Software com IA\04 - Desafio…
+
+
+❯ /refactor-arch                                                                
+
+  Read 1 file, ran 5 shell commands (ctrl+o to expand)
+
+● Phase 1 is complete, so I'm now auditing the current code from commit e5f079a,
+  and I'll run a quick in-memory check to confirm two suspected findings before
+  writing the report. · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Both suspicions checked out: a regular user can change an admin's password and
+  delete them, even with AUTH_REQUIRED=true, and malformed payloads return 500.
+  Writing the report now.
+
+● Write(D:\Dev\courses\MBA em Engenharia de Software com IA\04 - Desafios 
+       Técnicos - MBA 
+       IA\mba-ia-refactor-projects-skill\reports\audit-task-manager-api.md)
+  ⎿  Wrote 133 lines to D:\Dev\courses\MBA em Engenharia de Software com 
+     IA\04 - Desafios Técnicos - MBA 
+     IA\mba-ia-refactor-projects-skill\reports\audit-task-manager-api.md
+       1 ================================
+       2 ARCHITECTURE AUDIT REPORT
+       3 ================================
+       4 Project: task-manager-api
+       5 Stack:   Python 3.12 (local) + Flask 3.0.0 / Flask-SQLAlchemy 3.
+         1.1 (SQLite)
+       6 Files:   27 analyzed | ~1192 lines of code
+       7 Date:    2026-11-25
+       8 
+       9 > Nota: este projeto já passou por uma refatoração MVC (commit `
+     … +125 lines (~12 KB) (ctrl+o to expand)
+
+● ================================
+  PHASE 1: PROJECT ANALYSIS
+  ================================
+  Language:      Python 3.12.0 (local)
+  Framework:     Flask 3.0.0 (Flask-SQLAlchemy 3.1.1 / SQLAlchemy 2.1.9)
+  Dependencies:  flask-cors 4.0.0, marshmallow 3.20.1, requests 2.31.0, 
+  python-dotenv 1.0.0, itsdangerous (transitive), werkzeug.security
+  Domain:        Task Manager (tasks, users, categories, productivity reports)
+  Architecture:  MVC already in layers (refactored in e5f079a): 
+  config/models/controllers/routes(Blueprints)/middlewares/services; the domain 
+  layer depends on middlewares
+  Source files:  27 files analyzed (~1192 lines)
+  DB tables:     tasks, users, categories
+  Entry point:   app.py (python seed.py && python app.py, port 5000)
+  Endpoints:     22 routes mapped
+  ================================
+
+  Contract: GET /, GET /health · GET|POST /tasks, GET|PUT|DELETE 
+  /tasks/<int:id>, GET /tasks/search, GET /tasks/stats · GET|POST /users,
+  GET|PUT|DELETE /users/<int:id>, GET /users/<int:id>/tasks, POST /login · GET 
+  /reports/summary, GET /reports/user/<int:id> · GET|POST /categories,
+  PUT|DELETE /categories/<int:id>. Creates return 201; everything else returns
+  200.
+
+  ================================
+  ARCHITECTURE AUDIT REPORT
+  ================================
+  Project: task-manager-api
+  Stack:   Python 3.12 (local) + Flask 3.0.0 / Flask-SQLAlchemy 3.1.1 (SQLite)
+  Files:   27 analyzed | ~1192 lines of code
+  Date:    2026-11-25
+
+  ## Summary
+  CRITICAL: 1 | HIGH: 0 | MEDIUM: 8 | LOW: 3
+
+  #1 [CRITICAL] Admin endpoint with no authorization: account takeover (AP-03)
+  - Files: config.py:26 · middlewares/auth.py:11, 36-38 ·
+    controllers/user_controller.py:25-31, 65-91 · routes/user_routes.py:23-31
+  - What's wrong: AUTH_REQUIRED is off by default. Even when it's on, the code
+    only checks that a token is valid. It never checks who owns the resource or
+    what role the caller has.
+  - Confirmed by test: a regular user ran PUT /users/1 {"password":"hacked"} and
+    got 200. The admin's password then became hacked. DELETE /users/1 also
+    returned 200.
+  - Fix: authorization per resource (a user can only change themselves unless
+    they're an admin). Admin-only for deletes and /reports/* (P-03).
+
+  #2 [MEDIUM] Weak plaintext credentials in the seed (AP-02): seed.py:23, 30, 37
+  - The seed creates an admin with password '1234', plus 'abcd' and 'pass'. It
+    also wipes every table and has no environment guard.
+  - Fix: read passwords from env vars and refuse to run outside dev (P-02).
+
+  #3 [MEDIUM] Coupling between layers (AP-07)
+  - utils/validators.py:6 and controllers import domain exceptions from
+    middlewares/error_handler.
+  - user_controller.py:8 imports issue_token from the auth middleware.
+  - task_controller.py:68 creates NotificationService inside the use case.
+  - Fix: move the errors to their own domain module and inject the notification
+    service in create_app (P-07).
+
+  #4 [MEDIUM] Legacy MD5 hash, weak password policy, no login rate limit (AP-09)
+  - models/user.py:41-45 still accepts unsalted hashlib.md5.
+  - config.py:51 sets MIN_PASSWORD_LENGTH = 4.
+  - /login has no rate limiting (user_controller.py:113-121).
+  - Fix: P-09.
+
+  #5 [MEDIUM] Missing type validation returns 500 instead of 400 (AP-12):
+  utils/validators.py:61-62, 67-70, 74-75, 81-84, 128-133 ·
+  task_controller.py:95
+  - Confirmed by test: tags:{…}, description:{…} and category name:[…] all
+    returned 500.
+  - The search LIKE doesn't escape %/_.
+  - Fix: P-12.
+
+  #6 [MEDIUM] Aggregations done in memory and full table scans (AP-11):
+  task_controller.py:37-39, 112-114 · report_controller.py:16-26, 58-60, 66-69, 
+  77-84
+  - The overdue check loads every task into Python.
+  - The summary report runs 5 separate COUNT queries.
+  - GET /tasks has no pagination.
+  - Fix: P-11.
+
+  #7 [MEDIUM] Outdated dependencies with known CVEs / legacy API (AP-14):
+  requirements.txt:3, 5 · models/task.py:21-22 · middlewares/auth.py:3
+  - flask-cors==4.0.0 and requests==2.31.0 have known vulnerabilities.
+  - backref is legacy in SQLAlchemy 2.x.
+  - itsdangerous is imported directly but not declared in requirements.txt.
+  - Fix: P-14.
+
+  #8 [MEDIUM] Insecure config defaults (AP-15): config.py:15, 20, 22
+  - With no env var, SECRET_KEY is randomly generated per process, so tokens
+    break on restart and across workers.
+  - Defaults are HOST=0.0.0.0 and CORS=*.
+  - Fix: P-02.
+
+  #9 [MEDIUM] Synchronous SMTP inside the request (AP-16):
+  notification_service.py:30-34 · task_controller.py:67-68
+  - POST /tasks can block for up to about 10 s when notifications are enabled.
+  - Fix: P-06.
+
+  #10 [LOW] Magic status/role strings (AP-17): report_controller.py:30, 69, 80 ·
+  user_controller.py:27 · validators.py:64, 92 · models/task.py:12 ·
+  models/user.py:20, 49 · config.py:41
+  - DEFAULT_ROLE is defined but never used.
+  - report_controller.py:80 repeats VALID_STATUSES as a literal.
+
+  #11 [LOW] Unclear names (AP-18): seed.py:20-65, 82-94 (u1, c1, td, t) ·
+  category_routes.py:18-25 (cat_id)
+
+  #12 [LOW] Dead code and unused dependencies (AP-20): requirements.txt:4-5 ·
+  notification_service.py:47-50 · user_controller.py:98-110 ·
+  report_controller.py:87
+  - marshmallow and requests are never imported.
+  - notify_task_overdue is never called.
+  - Two places serialize by hand instead of using to_dict().
+
+  Deprecated APIs
+
+  ┌──────────────────────┬────────────────────────┬────────────────────────┐
+  │      File:Line       │       Deprecated       │   Modern replacement   │
+  ├──────────────────────┼────────────────────────┼────────────────────────┤
+  │ models/task.py:21-22 │ relationship(backref=) │ back_populates         │
+  ├──────────────────────┼────────────────────────┼────────────────────────┤
+  │ requirements.txt:3   │ flask-cors==4.0.0      │ 6.x                    │
+  ├──────────────────────┼────────────────────────┼────────────────────────┤
+  │ requirements.txt:5   │ requests==2.31.0       │ remove it, or >=2.32.4 │
+  └──────────────────────┴────────────────────────┴────────────────────────┘
+
+  No datetime.utcnow(), Model.query.get() or before_first_request left in the
+  code.
+
+  Architecture: the MVC layering is already right. What's left is authorization,
+  input validation, the domain layer depending on middleware, and dependency
+  cleanup.
+
+  ================================
+  Total: 12 findings
+  ================================
+
+  The audit covers the code as it is after the earlier refactor (commit
+  e5f079a), so it finds much less than the original audit did. I saved it to
+  ../reports/audit-task-manager-api.md and did not overwrite audit-project-3.md.
+  I confirmed #1 and #5 by running the app in memory; no project files were
+  changed.
+
+  If you approve, Phase 3 will make focused fixes rather than another
+  restructure. #1 needs a contract decision: per-resource authorization will
+  start returning 403 when you're logged in and try to change another user. With
+  AUTH_REQUIRED=false (the default), there's no caller identity to check, so
+  the original contract stays as it is.
+
+  Phase 2 complete. Proceed with refactoring (Phase 3)? [y/n]
+
+✻ Churned for 2m 54s · done 4:33 PM

@@ -121,7 +121,7 @@ Cada entrada tem **sinais greppáveis** (regex quando possível), **o que não �
 | **Linhas exatas** nos findings | A Fase 2 exige ler todos os arquivos e confirmar cada ocorrência com grep; o template proíbe findings sem linha/evidência e mostra um exemplo "mal escrito". |
 | **Relatório inflado** (mesmo problema repetido 20×) | Regra de agrupamento: mesmo AP + mesmo arquivo = um finding com várias linhas. |
 | **Projeto 3 já organizado** — risco de "reescrever por reescrever" | `SKILL.md` diferencia monolito × parcialmente organizado; as guidelines têm uma árvore alvo específica que preserva `models/routes/services/utils` e adiciona só o que falta. |
-| **Corrigir segurança sem quebrar o contrato** (ex.: endpoints admin públicos) | Política de exceções documentadas + recurso opcional: `ADMIN_TOKEN` / `AUTH_REQUIRED` ativam a proteção por ambiente; sem eles, o contrato original é mantido. `/admin/query` (SQL arbitrário) foi removido por não ter forma segura. |
+| **Corrigir segurança sem quebrar o contrato** (ex.: endpoints admin públicos) | Na 1ª passada, a proteção era opcional (`ADMIN_TOKEN` / `AUTH_REQUIRED` desligados por padrão). A **re-auditoria feita pela própria skill** apontou isso como CRITICAL (fail-open). Ficou assim: segurança por padrão (fail-closed), contrato legado apenas como opt-out explícito de dev (`AUTH_REQUIRED=false`), e exceções documentadas. `/admin/query` (SQL arbitrário) foi removido por não ter forma segura. A regra "seguro por padrão / autenticação ≠ autorização" foi incorporada ao `SKILL.md` e ao catálogo. |
 | **Senhas já gravadas** em texto puro/MD5 | Migração transparente: no login, hash legado é verificado uma vez e regravado com scrypt. |
 | **sqlite3 do Node + transações concorrentes** na mesma conexão | Wrapper com Promises e `transaction()` serializado por fila; testado com 6 checkouts paralelos. |
 | **Comparar antes/depois de forma objetiva** | Smoke tests (`scripts/`) rodados no código original (baseline) e no refatorado, com `diff` do status e do formato de cada resposta. |
@@ -139,6 +139,30 @@ Cada entrada tem **sinais greppáveis** (regex quando possível), **o que não �
 | 3 — task-manager-api | 3 | 3 | 7 | 4 | **17** | `Query.get()` (16×), `datetime.utcnow()` (22×), `type(x) ==` (3×) |
 
 Todos os findings da análise manual (seção A) aparecem nos relatórios gerados pela skill.
+
+### Iteração 2: re-auditoria do código refatorado
+
+Depois da refatoração, rodei `claude "/refactor-arch"` novamente em cada projeto, já sobre o código refatorado. A skill reconheceu o MVC e não propôs reestruturar. Mesmo assim, encontrou falhas reais que ficaram da 1ª passada e confirmou cada uma com requisições de teste. Os relatórios estão em [`reports/reaudit-project-{1,2,3}.md`](reports/) e os logs da sessão em [`logs/`](logs/).
+
+| Projeto | Re-auditoria | Principais achados | Correção |
+|---|---|---|---|
+| 1 | 1 CRITICAL, 2 HIGH, 1 MEDIUM, 4 LOW | `/admin/reset-db` aberto sem `ADMIN_TOKEN` (fail-open). Seed com senhas fixas. Email duplicado e pedido para usuário inexistente aceitos. Tipos inválidos geravam 500. | `require_admin` fail-closed. Seed só em dev, com senhas do ambiente. `UNIQUE(email)` + 409. Usuário do pedido validado. Validadores de tipo. Exceções em `src/exceptions.py`. Reset movido para `database/`. Defaults seguros. |
+| 2 | 0 CRITICAL, 3 HIGH, 3 MEDIUM, 2 LOW | Rotas admin fail-open. Checkout de usuário existente **ignorava a senha**. Pagamento autorizado antes do hash. Matrícula/cobrança duplicada. 413/415 viravam 500. | `requireAdmin` fail-closed. `passwordService.verify` → 401. Toda validação antes do pagamento. `UNIQUE(email)` e `UNIQUE(user_id, course_id)` → 409. Error handler respeita 4xx. Cache morto removido. Shutdown limpo. |
+| 3 | 1 CRITICAL, 0 HIGH, 8 MEDIUM, 3 LOW | Autenticação opcional e **sem autorização**: usuário comum trocava a senha do admin ou o deletava. MD5/senha de 4 caracteres, sem rate limit. Agregações em memória. SMTP síncrono. Deps com CVE. | `AUTH_REQUIRED=true` por padrão + `authorization_service` (dono/role por recurso). Login com 429 após 5 falhas. Senha mínima de 8. Overdue e contagens no banco. SMTP em background. `flask-cors 6.0.1`. `back_populates`. Erros em `errors.py`. |
+
+Validação depois das correções (smoke tests em `scripts/`, rodados contra o servidor real):
+
+- **P1:**
+  - 29 dos 30 casos com o mesmo status do baseline original. A exceção intencional é o SQL Injection, que agora recebe 401.
+  - Mais 8 casos de segurança e integridade: 409 para email duplicado, 400 para tipos inválidos, 400 para usuário inexistente e 403 para admin sem token. Com o token correto, 200. Em `APP_ENV=producao`, o seed não roda.
+- **P2:**
+  - 9 de 9 casos do contrato.
+  - Mais 9 casos de segurança: 401 para senha errada e para senha ausente, 409 para matrícula repetida, 400 para tipos inválidos, 415 para charset inválido e 403 para admin sem token.
+  - Em 6 checkouts concorrentes do mesmo email, 1 recebe 200 e 5 recebem 409.
+- **P3:**
+  - 36 de 36 casos com `AUTH_REQUIRED=false`, idênticos ao baseline. Os mesmos 36 de 36 com autenticação ligada e token de admin.
+  - Mais 20 casos de autorização, validação e rate limit: usuário comum recebe 403 ao alterar ou deletar outro usuário, ao se promover e ao ver o relatório geral. Recebe 200 nos próprios recursos. A 6ª falha de login seguida recebe 429.
+  - Os valores de `/reports/*` e `/tasks/stats` são idênticos aos da versão anterior.
 
 ### Antes × depois
 
@@ -167,7 +191,7 @@ src/AppManager.js (141)       src/app.js                   # composition root
 src/utils.js      (25)        src/config/index.js
                               src/database/connection.js   # wrapper Promise + transaction()
                               src/models/{user,course,enrollment,payment,auditLog}Model.js
-                              src/services/{payment,password,cache}Service.js, logger.js
+                              src/services/{payment,password}Service.js, logger.js
                               src/controllers/{checkout,report,user}Controller.js
                               src/routes/{checkout,admin}Routes.js
                               src/middlewares/{errorHandler,requireAdmin}.js
@@ -180,11 +204,13 @@ src/utils.js      (25)        src/config/index.js
 ANTES                                  DEPOIS
 app.py (config + rotas + create_all)   app.py           # create_app() factory
                                        config.py        # NOVO — env vars (dotenv) + constantes
+                                       errors.py        # NOVO — erros de domínio
 models/  (to_dict com password, MD5)   models/          # sem password, scrypt, is_overdue único
 routes/  (validação+regra+query)       routes/          # views finas; + category_routes, system_routes
 —                                      controllers/     # NOVO — task, user, report, category
-services/ (não usado, senha SMTP)      services/        # config injetada, desligado por padrão
-—                                      middlewares/     # NOVO — error_handler, auth (token assinado)
+services/ (não usado, senha SMTP)      services/        # notification (background), auth (token + rate limit),
+                                                        # authorization (regras dono/role)
+—                                      middlewares/     # NOVO — error_handler, auth (identifica o usuário)
 utils/helpers.py (código morto)        utils/           # helpers puros + validators.py
 ```
 
@@ -211,6 +237,7 @@ utils/helpers.py (código morto)        utils/           # helpers puros + valid
 | Entry point claro | ✅ | ✅ | ✅ |
 | Aplicação inicia sem erros | ✅ | ✅ | ✅ |
 | Endpoints originais respondem corretamente | ✅ 30/30 | ✅ 9/9 | ✅ 36/36 |
+| **Iteração 2**: re-auditoria executada e findings corrigidos | ✅ 8 | ✅ 8 | ✅ 12 |
 
 ### Logs de execução após a refatoração
 
@@ -247,7 +274,7 @@ DELETE /api/users/1                   200  Usuário deletado com suas matrícula
 GET  /nao-existe                      404  Cannot GET /nao-existe
 2026-11-25T17:27:05.684Z [INFO] Pagamento PAID card=****4444 amount=497   <- cartão mascarado
 ```
-Corpos e status idênticos ao original nos 5 casos de checkout e no relatório; com `ADMIN_TOKEN` definido, admin sem header → 403 e com header → 200; 6 checkouts concorrentes → 6 matrículas consistentes.
+Corpos e status são idênticos ao original nos 5 casos de checkout e no relatório. Na iteração 2, as rotas admin exigem `ADMIN_TOKEN`: sem header, 403; com header, 200. O checkout de usuário existente passou a exigir o `pwd` correto, e o smoke test envia essa senha. Veja a seção "Iteração 2" acima.
 
 **Projeto 3** — `python seed.py && python app.py` + `python scripts/smoke_project3.py`:
 
@@ -262,7 +289,14 @@ Seed concluído com sucesso!   3 usuários / 4 categorias / 10 tasks   (sem Depr
 200 GET /categories   201 POST   200 PUT   200/404 DELETE /categories
 404 GET /rota-inexistente (JSON)
 ```
-Diff contra o baseline: **mesmos status em 36/36 casos**; diferenças apenas na remoção do campo `password` e no 404 em JSON. Extras: `priority: "alta"` → 400 (antes 500); login com hash MD5 legado → 200 e hash migrado para `scrypt:`; com `AUTH_REQUIRED=true`, `GET /tasks` sem token → 401, token forjado `fake-jwt-token-1` → 401, token válido → 200, criar `admin` sem ser admin → 403.
+Diff contra o baseline: **mesmos status em 36/36 casos**; diferenças apenas na remoção do campo `password` e no 404 em JSON. Extras:
+- `priority: "alta"` → 400 (antes 500).
+- Login com hash MD5 legado → 200, e o hash é migrado para `scrypt:`.
+- Com autenticação ligada, que é o padrão desde a iteração 2:
+  - `GET /tasks` sem token → 401;
+  - token forjado `fake-jwt-token-1` → 401;
+  - token válido → 200;
+  - criar `admin` sem ser admin → 403.
 
 ### Comportamento da skill em stacks diferentes
 
@@ -298,7 +332,17 @@ cd ../task-manager-api
 claude "/refactor-arch"
 ```
 
-A skill imprime a Fase 1, gera o relatório da Fase 2 e **para** com `Proceed with refactoring (Phase 3)? [y/n]`. Responda `y` para refatorar. Para reexecutar sobre o código original, faça checkout do commit base (`git checkout 6d1ce62 -- <projeto>`).
+A skill imprime a Fase 1, gera o relatório da Fase 2 e **para** com `Proceed with refactoring (Phase 3)? [y/n]`. Responda `y` para refatorar.
+
+Rodada sobre o código desta branch, que já está refatorado, ela faz uma **re-auditoria**. Para executá-la sobre o código **original** sem mexer na branch, use uma cópia separada:
+
+```bash
+git worktree add ../base 6d1ce62
+for p in code-smells-project ecommerce-api-legacy task-manager-api; do
+  mkdir -p ../base/$p/.claude/skills && cp -r $p/.claude/skills/refactor-arch ../base/$p/.claude/skills/
+done
+cd ../base/code-smells-project && claude "/refactor-arch"   # idem para os outros dois
+```
 
 ### Validar que a refatoração funcionou
 
@@ -307,20 +351,22 @@ A skill imprime a Fase 1, gera o relatório da Fase 2 e **para** com `Proceed wi
 cd code-smells-project
 python -m venv .venv && . .venv/bin/activate      # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-python app.py &                                    # http://localhost:5000
-python ../scripts/smoke_project1.py                # status + formato de cada endpoint
+python app.py &                                    # http://127.0.0.1:5000
+python ../scripts/smoke_project1.py http://127.0.0.1:5000 --security
 
 # Projeto 2
 cd ../ecommerce-api-legacy
-npm install && npm start &                         # http://localhost:3000
-sh ../scripts/smoke_project2.sh
+npm install
+ADMIN_TOKEN=s3cr3t SEED_USER_PASSWORD=leonan123 npm start &          # http://localhost:3000
+ADMIN_TOKEN=s3cr3t SEED_USER_PASSWORD=leonan123 sh ../scripts/smoke_project2.sh http://localhost:3000 --security
 
-# Projeto 3
+# Projeto 3 (autenticação ligada por padrão)
 cd ../task-manager-api
 python -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
-python seed.py && python app.py &                  # http://localhost:5000
-python ../scripts/smoke_project3.py
+SEED_PASSWORD=1234 python seed.py && python app.py &                 # http://127.0.0.1:5000
+SEED_PASSWORD=1234 python ../scripts/smoke_project3.py http://127.0.0.1:5000 --auth --security
+# contrato legado (sem auth): AUTH_REQUIRED=false python app.py  +  smoke sem --auth
 ```
 
-Para comparar com o original, rode o mesmo smoke test no commit base e faça `diff` das saídas. Variáveis de ambiente de cada projeto estão em `.env.example` (`SECRET_KEY`, `ADMIN_TOKEN`, `AUTH_REQUIRED`, etc.).
+Para comparar com o original, rode o mesmo smoke test no commit base e faça `diff` das saídas. Variáveis de ambiente de cada projeto estão em `.env.example` (`SECRET_KEY`, `ADMIN_TOKEN`, `AUTH_REQUIRED`, `SEED_*`, etc.).
