@@ -29,3 +29,7 @@ GET {{baseUrl}}/api/admin/financial-report
 
 ### Deletar usuário
 DELETE {{baseUrl}}/api/users/1
+
+### Rotas admin com ADMIN_TOKEN configurado (opcional)
+GET {{baseUrl}}/api/admin/financial-report
+X-Admin-Token: <valor de ADMIN_TOKEN>

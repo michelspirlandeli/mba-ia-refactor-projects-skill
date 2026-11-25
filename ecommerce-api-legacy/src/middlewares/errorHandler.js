@@ -1,0 +1,23 @@
+const { AppError, NotFoundError } = require('../errors/AppError');
+
+// Envolve handlers async para que rejeições cheguem ao error handler (Express 4 não faz isso sozinho).
+const asyncHandler = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+
+const notFoundHandler = (req, res, next) => next(new NotFoundError(`Cannot ${req.method} ${req.path}`));
+
+// Error handler central. Mantém o formato de erro do projeto original (texto puro).
+const createErrorHandler = (logger) => (err, req, res, next) => {
+    if (res.headersSent) return next(err);
+
+    if (err instanceof AppError) {
+        return res.status(err.statusCode).send(err.message);
+    }
+    if (err.type === 'entity.parse.failed') {
+        return res.status(400).send('Bad Request');
+    }
+
+    logger.error(`Erro não tratado em ${req.method} ${req.path}: ${err.stack || err}`);
+    return res.status(500).send('Erro interno');
+};
+
+module.exports = { asyncHandler, notFoundHandler, createErrorHandler };
