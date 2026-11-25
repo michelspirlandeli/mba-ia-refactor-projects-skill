@@ -1,4 +1,4 @@
-from config import CLOSED_STATUSES, DEFAULT_PRIORITY
+from config import CLOSED_STATUSES, DEFAULT_PRIORITY, STATUS_PENDING
 from database import db
 from utils.helpers import utcnow
 
@@ -9,7 +9,7 @@ class Task(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     title = db.Column(db.String(200), nullable=False)
     description = db.Column(db.Text, nullable=True)
-    status = db.Column(db.String(50), default='pending')
+    status = db.Column(db.String(50), default=STATUS_PENDING)
     priority = db.Column(db.Integer, default=DEFAULT_PRIORITY)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)
     category_id = db.Column(db.Integer, db.ForeignKey('categories.id'), nullable=True)
@@ -18,8 +18,8 @@ class Task(db.Model):
     due_date = db.Column(db.DateTime, nullable=True)
     tags = db.Column(db.String(500), nullable=True)
 
-    user = db.relationship('User', backref='tasks')
-    category = db.relationship('Category', backref='tasks')
+    user = db.relationship('User', back_populates='tasks')
+    category = db.relationship('Category', back_populates='tasks')
 
     def to_dict(self):
         return {

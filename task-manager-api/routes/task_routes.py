@@ -1,13 +1,15 @@
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, current_app, jsonify, request
 
 from controllers import task_controller
+from middlewares.auth import current_actor
 
 task_bp = Blueprint('tasks', __name__)
 
 
 @task_bp.route('/tasks', methods=['GET'])
 def get_tasks():
-    return jsonify(task_controller.list_tasks()), 200
+    tasks = task_controller.list_tasks(page=request.args.get('page'), per_page=request.args.get('per_page'))
+    return jsonify(tasks), 200
 
 
 @task_bp.route('/tasks/<int:task_id>', methods=['GET'])
@@ -17,17 +19,18 @@ def get_task(task_id):
 
 @task_bp.route('/tasks', methods=['POST'])
 def create_task():
-    return jsonify(task_controller.create_task(request.get_json(silent=True))), 201
+    return jsonify(task_controller.create_task(
+        request.get_json(silent=True), current_actor(), current_app.extensions['notification_service'])), 201
 
 
 @task_bp.route('/tasks/<int:task_id>', methods=['PUT'])
 def update_task(task_id):
-    return jsonify(task_controller.update_task(task_id, request.get_json(silent=True))), 200
+    return jsonify(task_controller.update_task(task_id, request.get_json(silent=True), current_actor())), 200
 
 
 @task_bp.route('/tasks/<int:task_id>', methods=['DELETE'])
 def delete_task(task_id):
-    task_controller.delete_task(task_id)
+    task_controller.delete_task(task_id, current_actor())
     return jsonify({'message': 'Task deletada com sucesso'}), 200
 
 

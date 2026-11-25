@@ -3,6 +3,7 @@ import hmac
 
 from werkzeug.security import check_password_hash, generate_password_hash
 
+from config import DEFAULT_ROLE, ROLE_ADMIN
 from database import db
 from utils.helpers import utcnow
 
@@ -17,9 +18,11 @@ class User(db.Model):
     name = db.Column(db.String(100), nullable=False)
     email = db.Column(db.String(150), unique=True, nullable=False)
     password = db.Column(db.String(255), nullable=False)
-    role = db.Column(db.String(50), default='user')
+    role = db.Column(db.String(50), default=DEFAULT_ROLE)
     active = db.Column(db.Boolean, default=True)
     created_at = db.Column(db.DateTime, default=utcnow)
+
+    tasks = db.relationship('Task', back_populates='user')
 
     def to_dict(self):
         # O hash da senha nunca é serializado.
@@ -46,4 +49,4 @@ class User(db.Model):
         return False
 
     def is_admin(self):
-        return self.role == 'admin'
+        return self.role == ROLE_ADMIN

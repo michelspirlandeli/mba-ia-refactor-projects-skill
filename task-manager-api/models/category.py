@@ -12,6 +12,8 @@ class Category(db.Model):
     color = db.Column(db.String(7), default=DEFAULT_COLOR)
     created_at = db.Column(db.DateTime, default=utcnow)
 
+    tasks = db.relationship('Task', back_populates='category')
+
     def to_dict(self):
         return {
             'id': self.id,

@@ -3,9 +3,10 @@ from sqlalchemy import func
 
 from config import DEFAULT_COLOR
 from database import db
-from middlewares.error_handler import NotFoundError
+from errors import NotFoundError
 from models.category import Category
 from models.task import Task
+from services import authorization_service as authz
 from utils.validators import validate_category
 
 
@@ -24,7 +25,8 @@ def list_categories():
     return [{**c.to_dict(), 'task_count': task_counts.get(c.id, 0)} for c in categories]
 
 
-def create_category(payload):
+def create_category(payload, actor):
+    authz.ensure_privileged(actor)
     fields = validate_category(payload)
     category = Category(color=fields.pop('color', DEFAULT_COLOR), **fields)
     db.session.add(category)
@@ -32,7 +34,8 @@ def create_category(payload):
     return category.to_dict()
 
 
-def update_category(category_id, payload):
+def update_category(category_id, payload, actor):
+    authz.ensure_privileged(actor)
     category = get_category_or_404(category_id)
     for name, value in validate_category(payload, partial=True).items():
         setattr(category, name, value)
@@ -40,7 +43,8 @@ def update_category(category_id, payload):
     return category.to_dict()
 
 
-def delete_category(category_id):
+def delete_category(category_id, actor):
+    authz.ensure_privileged(actor)
     category = get_category_or_404(category_id)
     # Desvincula as tasks antes de remover (antes ficavam com category_id órfão).
     db.session.execute(db.update(Task).where(Task.category_id == category_id).values(category_id=None))

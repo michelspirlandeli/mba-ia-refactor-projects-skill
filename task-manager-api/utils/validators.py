@@ -1,9 +1,10 @@
-"""Validação de payloads centralizada (antes copiada entre create/update)."""
+"""Validação de payloads centralizada. Tipos errados → 400 (nunca 500)."""
 from config import (
-    DATE_FORMAT, DEFAULT_PRIORITY, MAX_PRIORITY, MAX_TITLE_LENGTH, MIN_PASSWORD_LENGTH,
-    MIN_PRIORITY, MIN_TITLE_LENGTH, VALID_ROLES, VALID_STATUSES,
+    DATE_FORMAT, DEFAULT_PRIORITY, DEFAULT_ROLE, MAX_CATEGORY_DESCRIPTION_LENGTH, MAX_EMAIL_LENGTH,
+    MAX_NAME_LENGTH, MAX_PAGE_SIZE, MAX_PRIORITY, MAX_TAGS_LENGTH, MAX_TITLE_LENGTH, MIN_PASSWORD_LENGTH,
+    MIN_PRIORITY, MIN_TITLE_LENGTH, STATUS_PENDING, VALID_ROLES, VALID_STATUSES,
 )
-from middlewares.error_handler import ValidationError
+from errors import ValidationError
 from utils.helpers import is_valid_color, is_valid_email, parse_date
 
 
@@ -11,6 +12,32 @@ def require_payload(data):
     if not data or not isinstance(data, dict):
         raise ValidationError('Dados inválidos')
     return data
+
+
+def _required_text(value, message, max_length):
+    if not isinstance(value, str) or not value.strip():
+        raise ValidationError(message)
+    if len(value) > max_length:
+        raise ValidationError(f'{message.split(" é ")[0]} muito longo')
+    return value
+
+
+def _optional_text(value, field, max_length=None):
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValidationError(f'{field} deve ser texto')
+    if max_length is not None and len(value) > max_length:
+        raise ValidationError(f'{field} muito longo')
+    return value
+
+
+def _optional_id(value, field):
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValidationError(f'{field} inválido')
+    return value
 
 
 def _title(value):
@@ -39,6 +66,8 @@ def _status(value):
 def _due_date(value, error_message):
     if not value:
         return None
+    if not isinstance(value, str):
+        raise ValidationError(error_message)
     parsed = parse_date(value, DATE_FORMAT)
     if parsed is None:
         raise ValidationError(error_message)
@@ -46,8 +75,16 @@ def _due_date(value, error_message):
 
 
 def _tags(value):
+    if value is None:
+        return None
     if isinstance(value, list):
-        return ','.join(str(tag) for tag in value)
+        if not all(isinstance(tag, (str, int, float)) and not isinstance(tag, bool) for tag in value):
+            raise ValidationError('Tags devem ser texto')
+        value = ','.join(str(tag) for tag in value)
+    elif not isinstance(value, str):
+        raise ValidationError('Tags devem ser uma lista ou texto separado por vírgulas')
+    if len(value) > MAX_TAGS_LENGTH:
+        raise ValidationError('Tags muito longas')
     return value
 
 
@@ -59,21 +96,33 @@ def validate_task(data, partial=False):
     if not partial or 'title' in data:
         result['title'] = _title(data.get('title'))
     if 'description' in data or not partial:
-        result['description'] = data.get('description', '')
+        result['description'] = _optional_text(data.get('description', ''), 'Descrição')
     if 'status' in data or not partial:
-        result['status'] = _status(data.get('status', 'pending'))
+        result['status'] = _status(data.get('status', STATUS_PENDING))
     if 'priority' in data or not partial:
         result['priority'] = _priority(data.get('priority', DEFAULT_PRIORITY))
     if 'user_id' in data or not partial:
-        result['user_id'] = data.get('user_id')
+        result['user_id'] = _optional_id(data.get('user_id'), 'user_id')
     if 'category_id' in data or not partial:
-        result['category_id'] = data.get('category_id')
+        result['category_id'] = _optional_id(data.get('category_id'), 'category_id')
     if 'due_date' in data:
         message = 'Formato de data inválido' if partial else 'Formato de data inválido. Use YYYY-MM-DD'
         result['due_date'] = _due_date(data['due_date'], message)
     if 'tags' in data and (partial or data['tags']):
         result['tags'] = _tags(data['tags'])
     return result
+
+
+def _password(value, message):
+    if not isinstance(value, str) or len(value) < MIN_PASSWORD_LENGTH:
+        raise ValidationError(message)
+    return value
+
+
+def _email(value):
+    if not isinstance(value, str) or len(value) > MAX_EMAIL_LENGTH or not is_valid_email(value):
+        raise ValidationError('Email inválido')
+    return value
 
 
 def validate_new_user(data):
@@ -85,11 +134,12 @@ def validate_new_user(data):
         raise ValidationError('Email é obrigatório')
     if not password:
         raise ValidationError('Senha é obrigatória')
-    if not is_valid_email(email):
-        raise ValidationError('Email inválido')
-    if not isinstance(password, str) or len(password) < MIN_PASSWORD_LENGTH:
-        raise ValidationError(f'Senha deve ter no mínimo {MIN_PASSWORD_LENGTH} caracteres')
-    return {'name': name, 'email': email, 'password': password, 'role': data.get('role', 'user')}
+    return {
+        'name': _required_text(name, 'Nome é obrigatório', MAX_NAME_LENGTH),
+        'email': _email(email),
+        'password': _password(password, f'Senha deve ter no mínimo {MIN_PASSWORD_LENGTH} caracteres'),
+        'role': validate_role(data.get('role', DEFAULT_ROLE)),
+    }
 
 
 def validate_role(role):
@@ -102,17 +152,11 @@ def validate_user_update(data):
     require_payload(data)
     result = {}
     if 'name' in data:
-        if not isinstance(data['name'], str) or not data['name'].strip():
-            raise ValidationError('Nome é obrigatório')
-        result['name'] = data['name']
+        result['name'] = _required_text(data['name'], 'Nome é obrigatório', MAX_NAME_LENGTH)
     if 'email' in data:
-        if not is_valid_email(data['email']):
-            raise ValidationError('Email inválido')
-        result['email'] = data['email']
+        result['email'] = _email(data['email'])
     if 'password' in data:
-        if not isinstance(data['password'], str) or len(data['password']) < MIN_PASSWORD_LENGTH:
-            raise ValidationError('Senha muito curta')
-        result['password'] = data['password']
+        result['password'] = _password(data['password'], 'Senha muito curta')
     if 'role' in data:
         result['role'] = validate_role(data['role'])
     if 'active' in data:
@@ -126,11 +170,10 @@ def validate_category(data, partial=False):
     require_payload(data)
     result = {}
     if not partial or 'name' in data:
-        if not data.get('name'):
-            raise ValidationError('Nome é obrigatório')
-        result['name'] = data['name']
+        result['name'] = _required_text(data.get('name'), 'Nome é obrigatório', MAX_NAME_LENGTH)
     if 'description' in data or not partial:
-        result['description'] = data.get('description', '')
+        result['description'] = _optional_text(data.get('description', ''), 'Descrição',
+                                               MAX_CATEGORY_DESCRIPTION_LENGTH)
     if 'color' in data:
         if not is_valid_color(data['color']):
             raise ValidationError('Cor inválida. Use o formato #RRGGBB')
@@ -145,3 +188,14 @@ def parse_int_param(value, name):
         return int(value)
     except (TypeError, ValueError):
         raise ValidationError(f'Parâmetro {name} inválido')
+
+
+def parse_pagination(page, per_page):
+    """Paginação opcional: sem `page`, devolve None (lista completa — contrato original)."""
+    page = parse_int_param(page, 'page')
+    if page is None:
+        return None
+    per_page = parse_int_param(per_page, 'per_page') or MAX_PAGE_SIZE
+    if page < 1 or not 1 <= per_page <= MAX_PAGE_SIZE:
+        raise ValidationError(f'Paginação inválida (page >= 1, 1 <= per_page <= {MAX_PAGE_SIZE})')
+    return page, per_page
