@@ -140,6 +140,25 @@ Cada entrada tem **sinais greppáveis** (regex quando possível), **o que não �
 
 Todos os findings da análise manual (seção A) aparecem nos relatórios gerados pela skill.
 
+### Execução completa da skill sobre o código original
+
+A skill foi executada com `claude "/refactor-arch"` em cada projeto, sobre o código original (commit `6d1ce62`, numa cópia separada via `git worktree`). As 3 execuções percorreram as 3 fases: análise, relatório, pausa, confirmação `y` e refatoração com validação. As sessões completas estão em [`logs/run-original-project-{1,2,3}-*.txt`](logs/).
+
+| | P1 — code-smells-project | P2 — ecommerce-api-legacy | P3 — task-manager-api |
+|---|---|---|---|
+| **Fase 1:** stack | Python 3.12 + Flask 3.1.1 | Node 20 + Express ^4.18.2 | Python 3.12 + Flask 3.0.0 + Flask-SQLAlchemy 3.1.1 |
+| Arquitetura detectada | "Fake MVC" (controllers acessam o banco) | "Big ball of mud" (`AppManager`) | Parcialmente em camadas |
+| Arquivos / rotas | 4 arquivos (~780 linhas) / 19 rotas | 3 arquivos (~180 linhas) / 3 rotas | 15 arquivos (~1158 linhas) / 22 rotas |
+| **Fase 2:** findings | 19 (5 CRITICAL, 5 HIGH, 5 MEDIUM, 4 LOW) | 19 (4 CRITICAL, 5 HIGH, 6 MEDIUM, 4 LOW) | 17 (3 CRITICAL, 4 HIGH, 6 MEDIUM, 4 LOW) |
+| Pausa `[y/n]` respeitada | ✅ | ✅ | ✅ |
+| **Fase 3:** boot | ✅ | ✅ | ✅ (sem DeprecationWarnings) |
+| Endpoints | ✅ 18/18 (+ `/admin/query` removido), 65/65 checks | ✅ 3/3, 28/28 checks | ✅ 22/22 |
+| CRITICAL/HIGH restantes | ✅ 0 | ✅ 0 | ✅ 0 |
+
+As contagens variam pouco em relação aos relatórios em `reports/audit-project-*.md` (18/18/17), porque a skill agrupa ocorrências de forma ligeiramente diferente a cada execução. Os anti-patterns detectados são os mesmos.
+
+O código entregue nesta branch é o da refatoração versionada nos commits, validado contra o baseline e corrigido na iteração 2 abaixo. As execuções sobre o código original servem como evidência de que a skill funciona de ponta a ponta nas 3 stacks.
+
 ### Iteração 2: re-auditoria do código refatorado
 
 Depois da refatoração, rodei `claude "/refactor-arch"` novamente em cada projeto, já sobre o código refatorado. A skill reconheceu o MVC e não propôs reestruturar. Mesmo assim, encontrou falhas reais que ficaram da 1ª passada e confirmou cada uma com requisições de teste. Os relatórios estão em [`reports/reaudit-project-{1,2,3}.md`](reports/) e os logs da sessão em [`logs/`](logs/).
@@ -225,7 +244,7 @@ utils/helpers.py (código morto)        utils/           # helpers puros + valid
 | **Fase 2** — Relatório segue o template | ✅ | ✅ | ✅ |
 | Cada finding tem arquivo e linhas exatos | ✅ | ✅ | ✅ |
 | Findings ordenados CRITICAL → LOW | ✅ | ✅ | ✅ |
-| Mínimo de 5 findings | ✅ 18 | ✅ 18 | ✅ 17 |
+| Mínimo de 5 findings | ✅ 18 (execução no original: 19) | ✅ 18 (19) | ✅ 17 (17) |
 | Detecção de APIs deprecated (se aplicável) | ✅ (nenhuma aplicável) | ✅ | ✅ |
 | Pausa e pede confirmação antes da Fase 3 | ✅ | ✅ | ✅ |
 | **Fase 3** — Estrutura de diretórios MVC | ✅ | ✅ | ✅ |

@@ -1,0 +1,1179 @@
+ ▐▛███▛█   Claude Code v2.1.332
+▝▜██████▀  Opus 5.5 · Claude Pro
+ ▝▝   ▝▝   D:\Dev\courses\MBA em Engenharia de Software com IA\04 - Desafio…
+
+
+❯ /refactor-arch                                                                
+
+● Starting Phase 1 — reading the analysis reference and listing the project
+  files.
+
+  Read 1 file, ran 3 shell commands · 1 failed (ctrl+o to expand)
+
+● ================================
+  PHASE 1: PROJECT ANALYSIS
+
+  Language:      JavaScript (Node.js v20.20.1 local; no engines declared)
+  Framework:     Express ^4.18.2
+  Dependencies:  express ^4.18.2, sqlite3 ^5.1.6
+  Domain:        LMS / course platform with checkout (users, courses, 
+  enrollments, payments, audit_logs)
+  Architecture:  "Big ball of mud" monolith. One AppManager class holds the 
+  connection, schema and seed, SQL, business rules and routing. utils.js mixes 
+  config, secrets and global state.
+  Source files:  3 files analyzed (~180 lines)
+  DB tables:     users, courses, enrollments, payments, audit_logs (SQLite 
+  :memory:, seeded at boot)
+  Entry point:   src/app.js (npm start → node src/app.js, port 3000)
+  Endpoints:     3 routes mapped
+
+  HTTP contract (baseline for Phase 3):
+
+  Method: POST
+  Path: /api/checkout (body usr, eml, pwd, c_id, card)
+  Success: 200 {msg:"Sucesso", enrollment_id}
+  Error paths: 400 "Bad Request" (missing field) · 404 "Curso não encontrado"
+    · 400 "Pagamento recusado" (card not starting with 4) · 500
+  ────────────────────────────────────────
+  Method: GET
+  Path: /api/admin/financial-report
+  Success: 200 [{course, revenue, students:[{student, paid}]}]
+  Error paths: 500
+  ────────────────────────────────────────
+  Method: DELETE
+  Path: /api/users/:id
+  Success: 200 text "Usuário deletado, …"
+  Error paths: — (always 200)
+
+  ---
+
+  ================================
+  ARCHITECTURE AUDIT REPORT
+  ================================
+  Project: ecommerce-api-legacy
+  Stack:   JavaScript (Node.js 20) + Express 4.18 (SQLite in-memory via sqlite3
+  5.1)
+  Files:   3 analyzed | ~180 lines of code
+  Date:    2026-11-26
+
+  ## Summary
+  CRITICAL: 4 | HIGH: 5 | MEDIUM: 6 | LOW: 4
+
+  ## Findings
+
+  ### #1 [CRITICAL] Hardcoded credentials / secrets (AP-02)
+  File: src/utils.js:2-5
+  File: src/AppManager.js:18, 45
+  Description: The config holds production-looking secrets as literals: `dbPass:
+  "senha_super_secreta_prod_123"`, `paymentGatewayKey:
+  "pk_live_1234567890abcdef"`, `dbUser: "admin_master"`, `smtpUser`. The seed
+  stores the user password `'123'` in plain text (line 18). Aggravating factor:
+  the live gateway key is printed to the log on every checkout (line 45).
+  Impact: Anyone with access to the repo or the logs gets a live payment key and
+  DB credentials. Rotating them means a code change and a deploy.
+  Recommendation: Move them to a `config` module that reads `process.env`, add a
+  `.env.example` without real values, and never log secrets (Playbook P-02).
+
+  ### #2 [CRITICAL] Administrative/destructive endpoints without authentication
+  (AP-03)
+  File: src/AppManager.js:80-129, 131-137
+  Description: `GET /api/admin/financial-report` returns revenue and student
+  names to anyone. `DELETE /api/users/:id` deletes any user with no
+  authentication or authorization check (no owner or role check).
+  Impact: Financial and personal data leaks. Any anonymous client can delete any
+  account.
+  Recommendation: Add fail-closed auth middleware (admin token from env; missing
+  token → 401/403) on both routes, with an explicit dev opt-out only (Playbook
+  P-03).
+
+  ### #3 [CRITICAL] God Class (AP-04)
+  File: src/AppManager.js:4-139
+  Description: `AppManager` (generic name, ~135 lines) concentrates the DB
+  connection (l.7), schema and seed (l.10-23), raw SQL, business rules (payment,
+  hashing, enrollment), route registration (l.25-137) and response formatting,
+  for 4 domains (users, courses, enrollments, payments).
+  Impact: Nothing can be tested in isolation. Any change risks the whole app. No
+  reuse across layers.
+  Recommendation: Split into config / db / models (repositories) / services /
+  controllers / routes / middlewares (Playbook P-04).
+
+  ### #4 [CRITICAL] Sensitive data exposed in logs (AP-05)
+  File: src/AppManager.js:45
+  Description: `console.log(`Processando cartão ${cc} na chave
+  ${config.paymentGatewayKey}`)` logs the **full card number (PAN)** together
+  with the gateway key.
+  Impact: PCI-DSS violation. Anyone with log access can read card data.
+  Recommendation: Never log the PAN (at most the last 4 digits, masked) or
+  secrets. Use a structured logger (Playbook P-05 / P-16).
+
+  ### #5 [HIGH] Business logic in the route / callback hell (AP-06)
+  File: src/AppManager.js:28-78, 80-129
+  Description: The checkout handler (~50 lines, 5 nesting levels) decides
+  payment status (`cc.startsWith("4") ? "PAID" : "DENIED"`, l.46), creates the
+  user, hashes the password, enrolls, records the payment and writes the audit
+  log, all inside HTTP callbacks. The report aggregates revenue inside the
+  handler (l.89-127) using manual counters (`coursesPending`, `enrPending`).
+  Impact: Rules can't be tested without HTTP, the flow is hard to follow, and
+  there is a risk of double responses or lost responses.
+  Recommendation: Extract `CheckoutService`/`ReportService` with async/await;
+  controllers only translate HTTP ↔ service (Playbook P-06).
+
+  ### #6 [HIGH] Tight coupling / no dependency injection (AP-07)
+  File: src/AppManager.js:1, 7, 37, 40, 50, 54, 57, 69, 83, 92, 104, 106, 133
+  File: src/app.js:8-10
+  Description: The class creates its own connection (`new
+  sqlite3.Database(':memory:')`) and the routes use `this.db`/`self.db`
+  directly. `app.js` instantiates `AppManager` with no way to inject a different
+  database.
+  Impact: The database can't be swapped in tests. Persistence is coupled to the
+  HTTP layer.
+  Recommendation: The composition root creates the db and injects it into
+  repositories → services → controllers (Playbook P-07).
+
+  ### #7 [HIGH] Mutable global state (AP-08)
+  File: src/utils.js:9-10, 14, 25
+  Description: Module-level `let globalCache = {}` and `let totalRevenue = 0`,
+  exported in `module.exports`. `logAndCache` writes to the cache on every
+  checkout and the cache grows without bound (`last_checkout_${userId}`).
+  Impact: Unbounded memory growth, hidden state shared across requests,
+  nondeterministic tests.
+  Recommendation: Remove the global cache (it is never read). If a cache is
+  needed, inject an instance with a bounded size and TTL (Playbook P-08).
+
+  ### #8 [HIGH] Weak password hashing / fake authentication (AP-09)
+  File: src/utils.js:17-23
+  File: src/AppManager.js:18, 35, 40, 66-75
+  Description: `badCrypto` repeats the first 2 base64 characters of the password
+  10,000 times and truncates to 10. The "hash" is reversible and collides for
+  every password with the same prefix (`"senhaforte"` and `"se..."` produce the
+  same hash). Default password `p || "123456"` (l.68). `pwd` is not required
+  (l.35). Checkout reuses an existing account **by email alone, without checking
+  the password** (l.40, 74). Seed password stored in plain text (l.18).
+  Impact: Stolen credentials are trivially recovered. Anyone can buy, and create
+  enrollments, in another user's account just by knowing their email.
+  Recommendation: `crypto.scrypt` with a random salt (Node stdlib, no new
+  dependency) plus `timingSafeEqual`. Require `pwd`, verify the password when
+  the email already exists, and hash the seed (Playbook P-09).
+
+  ### #9 [HIGH] Data integrity / missing transactions (AP-10)
+  File: src/AppManager.js:12-16, 50-63, 131-136
+  Description: Enrollment, payment and audit log are 3 writes with no
+  transaction (l.50-61): if the payment fails, the enrollment stays orphaned.
+  `DELETE /users/:id` ignores `err`, always returns 200 even for a nonexistent
+  id, and leaves enrollments and payments orphaned (the response message admits
+  it: "ficaram sujos no banco"). Schema has no `UNIQUE(email)`, no `FOREIGN KEY`
+  and no `UNIQUE(user_id, course_id)`, so duplicate enrollments are allowed.
+  Impact: Inconsistent data, a financial report with orphan entries, and
+  duplicate accounts and enrollments.
+  Recommendation: `BEGIN/COMMIT/ROLLBACK` in checkout, FKs with `ON DELETE
+  CASCADE` + `PRAGMA foreign_keys=ON`, `UNIQUE` constraints, and check
+  `err`/`changes` on delete (Playbook P-10).
+
+  ### #10 [MEDIUM] N+1 queries (AP-11)
+  File: src/AppManager.js:83, 89-106
+  Description: For each course, `SELECT * FROM enrollments` (l.92), and for each
+  enrollment, 2 more queries (`users` l.104, `payments` l.106). That is 1 + C +
+  2E queries.
+  Impact: Cost grows linearly with data volume, and the in-memory join is
+  fragile.
+  Recommendation: A single `LEFT JOIN` courses⋈enrollments⋈users⋈payments, then
+  group in the service (Playbook P-11).
+
+  ### #11 [MEDIUM] Missing input validation (AP-12)
+  File: src/AppManager.js:29-35, 46, 132
+  Description: Only presence is checked (`!u || !e || !cid || !cc`). There is no
+  type check: `card` sent as a number → `cc.startsWith is not a function`
+  throws inside the sqlite callback → **uncaught exception that kills the 
+  process** (l.46). No email format check, `pwd` optional, `:id` not validated
+  as an integer (l.132).
+  Impact: Remote DoS with a single request. Malformed data reaches the database.
+  Recommendation: A validation function in the routes layer (types, email,
+  required pwd, integer id) → 400 (Playbook P-12).
+
+  ### #12 [MEDIUM] Inconsistent error handling (AP-13)
+  File: src/AppManager.js:38, 41, 57, 70, 92-93, 104-106, 133
+  Description: No global error middleware. Plain-text errors (`"Erro DB"`, `"Bad
+  Request"`) instead of JSON. DB error turned into 404 (l.38). `err` ignored at
+  l.57, 92 (`enrollments.length` on `undefined` → crash), 104, 106, 133.
+  Impact: Swallowed failures, crashes, and an inconsistent error format for
+  clients.
+  Recommendation: async handlers + `(err, req, res, next)` middleware + an
+  `AppError` class with status (Playbook P-13).
+
+  ### #13 [MEDIUM] Deprecated/obsolete APIs (AP-14)
+  File: src/AppManager.js:26, 37-77, 83-128, 133
+  Description: sqlite3's nested-callback API (up to 5 levels) and the `const
+  self = this` idiom (l.26) used to work around `function` scope in callbacks.
+  Impact: Hard to read, error propagation is error-prone, and try/catch isn't
+  possible.
+  Recommendation: Promise wrapper (`util.promisify`/small `run/get/all` adapter)
+  + async/await (Playbook P-14).
+
+  ### #14 [MEDIUM] Configuration coupled to code (AP-15)
+  File: src/utils.js:6
+  File: src/AppManager.js:7
+  Description: Literal port `3000`, `':memory:'` fixed in the constructor. No
+  environment variable is read anywhere.
+  Impact: Can't change port or database per environment without editing code.
+  Recommendation: `PORT`, `DB_PATH` from env with dev defaults in the config
+  module (Playbook P-02).
+
+  ### #15 [MEDIUM] Blocking side effects in the request (AP-16)
+  File: src/utils.js:17-23
+  File: src/AppManager.js:45-46, 68
+  Description: `badCrypto` runs a 10,000-iteration loop with string
+  concatenation and `Buffer.from` **synchronously** on the event loop on every
+  checkout of a new user. The payment gateway is simulated inline in the
+  handler.
+  Impact: Blocks every concurrent request. The gateway can't be replaced or
+  mocked.
+  Recommendation: Async `crypto.scrypt` (runs on the libuv threadpool) and a
+  `paymentGateway` injected into the service (Playbook P-06 / P-09).
+
+  ### #16 [LOW] Magic numbers / strings (AP-17)
+  File: src/AppManager.js:21, 46, 48, 68, 108
+  File: src/utils.js:6, 19
+  Description: Approval prefix `"4"`, statuses `"PAID"`/`"DENIED"` repeated,
+  default `"123456"`, `10000` iterations, port `3000`.
+  Impact: Rules are spread out and hard to find or change.
+  Recommendation: Named constants (`PAYMENT_STATUS`, `APPROVED_CARD_PREFIX`)
+  (Playbook P-15).
+
+  ### #17 [LOW] Poor names (AP-18)
+  File: src/AppManager.js:4, 29-33
+  File: src/utils.js:12, 17
+  File: src/app.js:13
+  Description: Variables `u, e, p, cid, cc`. Class `AppManager`. `badCrypto`.
+  `logAndCache` (does two things). Boot log "Frankenstein LMS". (The contract
+  fields `usr/eml/pwd/c_id/card` are kept and only mapped internally.)
+  Impact: Code is hard to read.
+  Recommendation: Descriptive internal names. Map the request DTO to domain
+  names in the controller (Playbook P-15).
+
+  ### #18 [LOW] Logging with console.log (AP-19)
+  File: src/AppManager.js:45
+  File: src/utils.js:13
+  Description: `console.log` used as a logging mechanism inside the business
+  flow, with no level or structure.
+  Impact: Noise, no way to filter or redact.
+  Recommendation: A minimal logger module (levels) + request logging middleware
+  (Playbook P-16).
+
+  ### #19 [LOW] Dead code / unused exports (AP-20)
+  File: src/utils.js:2-3, 5, 9-10, 25
+  File: src/AppManager.js:2
+  Description: `totalRevenue` imported (AppManager l.2) and never used.
+  `globalCache` exported and never read. `dbUser`, `dbPass`, `smtpUser` never
+  referenced. Table `audit_logs` written but never read (kept, since it is a
+  legitimate audit trail).
+  Impact: Confusion about what is actually used, and attack surface (dead
+  secrets).
+  Recommendation: Remove unused symbols (Playbook P-15).
+
+  ## Deprecated APIs
+  | File:Line | Deprecated | Modern replacement |
+  |---|---|---|
+  | src/AppManager.js:37-77 | sqlite3 nested callbacks (checkout, 5 levels) |
+  promisified wrapper + `async/await` |
+  | src/AppManager.js:83-128 | sqlite3 nested callbacks (report, 4 levels) |
+  promisified wrapper + `async/await` |
+  | src/AppManager.js:26 | `const self = this` to keep the scope | arrow
+  functions / async methods |
+
+  ## Architecture Overview (current → target)
+  - Current: Monolith with a God Class `AppManager` (connection + schema + SQL +
+  rules + routes) and a `utils.js` mixing config, secrets, global state and
+  fake crypto.
+  - Target:  MVC — config / models / controllers (+services) / views(routes) /
+  middlewares / entry point
+
+  ================================
+  Total: 19 findings
+  ================================
+
+  I didn't save the report as a file because the ../reports/ folder doesn't
+  exist in this repository, and the skill only saves it there. If you want a
+  copy on disk, tell me where and I'll write it.
+
+  Phase 2 complete. Proceed with refactoring (Phase 3)? [y/n]
+
+✻ Baked for 1m 19s · done 1:11 PM
+
+❯ y                                                                             
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Phase 3's target layout is mapped to the findings: config, database, models,
+  services, controllers, routes, middlewares, and a thin app.js/server.js, with
+  AppManager.js and utils.js removed. · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Step 1–2: config, database and models.
+
+  Ran 1 shell command · 1 failed (ctrl+o to expand)
+
+● The heredoc batch failed to parse in Git Bash, so nothing was written. I'll
+  use the Write tool instead.
+
+● Write(src\config\constants.js)
+  ⎿  Wrote 20 lines to src\config\constants.js
+      1 const DEFAULT_PORT = 3000;
+      2 
+      3 const PAYMENT_STATUS = Object.freeze({
+      4     PAID: 'PAID',
+      5     DENIED: 'DENIED',
+      6 });
+      7 
+      8 // Regra do gateway simulado: cartões iniciados com este prefixo 
+        são aprovados.
+      9 const APPROVED_CARD_PREFIX = '4';
+     … +11 lines (ctrl+o to expand)
+
+● Write(src\config\index.js)
+  ⎿  Wrote 32 lines to src\config\index.js
+       1 const { DEFAULT_PORT } = require('./constants');
+       2 
+       3 const FALSY_VALUES = new Set(['false', '0', 'no', 'off']);
+       4 
+       5 function parseBoolean(value, defaultValue) {
+       6     if (value === undefined || value === '') return defaultValue
+         ;
+       7     return !FALSY_VALUES.has(String(value).trim().toLowerCase())
+         ;
+       8 }
+     … +24 lines (ctrl+o to expand)
+
+● Write(src\database\connection.js)
+  ⎿  Wrote 77 lines to src\database\connection.js
+       1 const sqlite3 = require('sqlite3');
+       2 
+       3 /**
+       4  * Wrapper Promise sobre o driver sqlite3 (substitui a API de ca
+         llbacks aninhados).
+       5  * Transações são serializadas, pois todas compartilham a mesma
+         conexão.
+       6  */
+       7 class Database {
+       8     constructor(connection) {
+     … +69 lines (ctrl+o to expand)
+
+● Write(src\database\schema.js)
+  ⎿  Wrote 43 lines to src\database\schema.js
+      1 const SCHEMA_SQL = `
+      2 PRAGMA foreign_keys = ON;
+      3 
+      4 CREATE TABLE IF NOT EXISTS users (
+      5     id    INTEGER PRIMARY KEY,
+      6     name  TEXT NOT NULL,
+      7     email TEXT NOT NULL UNIQUE,
+      8     pass  TEXT NOT NULL
+      9 );
+     … +34 lines (ctrl+o to expand)
+
+● Write(src\database\seed.js)
+  ⎿  Wrote 39 lines to src\database\seed.js
+       1 const crypto = require('crypto');
+       2 const { PAYMENT_STATUS } = require('../config/constants');
+       3 
+       4 /**
+       5  * Popula dados de demonstração apenas quando o banco está vazio
+         .
+       6  * A senha do usuário seed vem de SEED_USER_PASSWORD (ou é aleat
+         ória) e é gravada com hash.
+       7  */
+       8 async function seedDatabase(db, { hashPassword, seedUserPassword
+     … +32 lines (~1 KB) (ctrl+o to expand)
+
+● Write(src\models\userModel.js)
+  ⎿  Wrote 27 lines to src\models\userModel.js
+       1 class UserModel {
+       2     constructor(db) {
+       3         this.db = db;
+       4     }
+       5 
+       6     /** Uso interno (verificação de senha): nunca serializar o r
+         esultado em resposta HTTP. */
+       7     async findCredentialsByEmail(email) {
+       8         const row = await this.db.get('SELECT id, pass FROM user
+         s WHERE email = ?', [email]);
+     … +19 lines (ctrl+o to expand)
+
+● Write(src\models\courseModel.js)
+  ⎿  Wrote 11 lines to src\models\courseModel.js
+      1 class CourseModel {
+      2     constructor(db) {
+      3         this.db = db;
+      4     }
+      5 
+      6     findActiveById(id) {
+      7         return this.db.get('SELECT id, title, price FROM courses 
+        WHERE id = ? AND active = 1', [id]);
+      8     }
+      9 }
+     … +2 lines (ctrl+o to expand)
+
+● Write(src\models\enrollmentModel.js)
+  ⎿  Wrote 23 lines to src\models\enrollmentModel.js
+       1 class EnrollmentModel {
+       2     constructor(db) {
+       3         this.db = db;
+       4     }
+       5 
+       6     async exists(userId, courseId) {
+       7         const row = await this.db.get(
+       8             'SELECT 1 AS found FROM enrollments WHERE user_id = 
+         ? AND course_id = ?',
+       9             [userId, courseId],
+     … +14 lines (ctrl+o to expand)
+
+● Write(src\models\paymentModel.js)
+  ⎿  Wrote 15 lines to src\models\paymentModel.js
+       1 class PaymentModel {
+       2     constructor(db) {
+       3         this.db = db;
+       4     }
+       5 
+       6     async create({ enrollmentId, amount, status }) {
+       7         const { lastID } = await this.db.run(
+       8             'INSERT INTO payments (enrollment_id, amount, status
+         ) VALUES (?, ?, ?)',
+       9             [enrollmentId, amount, status],
+     … +6 lines (ctrl+o to expand)
+
+● Write(src\models\auditLogModel.js)
+  ⎿  Wrote 11 lines to src\models\auditLogModel.js
+      1 class AuditLogModel {
+      2     constructor(db) {
+      3         this.db = db;
+      4     }
+      5 
+      6     async record(action) {
+      7         await this.db.run("INSERT INTO audit_logs (action, create
+        d_at) VALUES (?, datetime('now'))", [action]);
+      8     }
+      9 }
+     … +2 lines (ctrl+o to expand)
+
+● Write(src\models\reportModel.js)
+  ⎿  Wrote 24 lines to src\models\reportModel.js
+       1 class ReportModel {
+       2     constructor(db) {
+       3         this.db = db;
+       4     }
+       5 
+       6     /** Uma única query (JOIN) no lugar das 1 + C + 2E queries d
+         o legado (N+1). */
+       7     findCourseEnrollmentPayments() {
+       8         return this.db.all(`
+       9             SELECT c.id      AS course_id,
+     … +15 lines (ctrl+o to expand)
+
+● Step 3: errors, services and controllers.
+
+● Write(src\errors\AppError.js)
+  ⎿  Wrote 41 lines to src\errors\AppError.js
+       1 class AppError extends Error {
+       2     constructor(message, statusCode = 400) {
+       3         super(message);
+       4         this.name = this.constructor.name;
+       5         this.statusCode = statusCode;
+       6     }
+       7 }
+       8 
+       9 class ValidationError extends AppError {
+      10     constructor(message = 'Bad Request') { super(message, 400);
+     … +32 lines (ctrl+o to expand)
+● Write(src\services\passwordService.js)
+  ⎿  Wrote 27 lines to src\services\passwordService.js
+      1 const crypto = require('crypto');
+      2 const { promisify } = require('util');
+      3 
+      4 // crypto.scrypt (stdlib): hash forte com salt, executado no thre
+        adpool — não bloqueia o event loop.
+      5 const scrypt = promisify(crypto.scrypt);
+      6 
+      7 const ALGORITHM = 'scrypt';
+      8 const SALT_BYTES = 16;
+      9 const KEY_LENGTH = 64;
+     … +18 lines (ctrl+o to expand)
+
+● Write(src\services\paymentService.js)
+  ⎿  Wrote 28 lines to src\services\paymentService.js
+       1 const { PAYMENT_STATUS, APPROVED_CARD_PREFIX } = require('../con
+         fig/constants');
+       2 
+       3 function maskCard(card) {
+       4     return `****${card.slice(-4)}`;
+       5 }
+       6 
+       7 /**
+       8  * Gateway de pagamento (simulado). A chave vem da configuração
+         e nunca é logada;
+     … +20 lines (ctrl+o to expand)
+
+● Write(src\controllers\checkoutController.js)
+  ⎿  Wrote 64 lines to src\controllers\checkoutController.js
+       1 const { PAYMENT_STATUS } = require('../config/constants');
+       2 const { isUniqueConstraintError } = require('../database/connect
+         ion');
+       3 const {
+       4     NotFoundError,
+       5     UnauthorizedError,
+       6     ConflictError,
+       7     PaymentDeniedError,
+       8 } = require('../errors/AppError');
+       9 
+     … +55 lines (ctrl+o to expand)
+
+● Write(src\controllers\reportController.js)
+  ⎿  Wrote 35 lines to src\controllers\reportController.js
+       1 const { PAYMENT_STATUS } = require('../config/constants');
+       2 
+       3 const UNKNOWN_STUDENT = 'Unknown';
+       4 
+       5 class ReportController {
+       6     constructor({ reportModel }) {
+       7         this.reportModel = reportModel;
+       8     }
+       9 
+      10     /** Receita por curso + lista de alunos com o valor pago. */
+     … +25 lines (ctrl+o to expand)
+
+● Write(src\controllers\userController.js)
+  ⎿  Wrote 20 lines to src\controllers\userController.js
+       1 const { NotFoundError } = require('../errors/AppError');
+       2 
+       3 class UserController {
+       4     constructor({ db, userModel, auditLogModel }) {
+       5         this.db = db;
+       6         this.userModel = userModel;
+       7         this.auditLogModel = auditLogModel;
+       8     }
+       9 
+      10     /** Remove o usuário e (via cascade) suas matrículas e pagam
+     … +11 lines (ctrl+o to expand)
+
+● Steps 4–5: routes (views), validators, middlewares and logger.
+
+● Write(src\utils\validators.js)
+  ⎿  Wrote 43 lines to src\utils\validators.js
+       1 const { CARD_NUMBER_PATTERN, EMAIL_PATTERN } = require('../confi
+         g/constants');
+       2 const { ValidationError } = require('../errors/AppError');
+       3 
+       4 const isNonEmptyString = (value) => typeof value === 'string' &&
+          value.trim() !== '';
+       5 
+       6 function parsePositiveInteger(value) {
+       7     const isNumeric = typeof value === 'number' || (typeof value
+          === 'string' && /^\d+$/.test(value.trim()));
+     … +36 lines (ctrl+o to expand)
+
+● Write(src\utils\asyncHandler.js)
+  ⎿  Wrote 6 lines to src\utils\asyncHandler.js
+      1 /** Express 4 não captura rejeições de handlers async: encaminha 
+        o erro ao errorHandler. */
+      2 const asyncHandler = (handler) => (req, res, next) => {
+      3     Promise.resolve(handler(req, res, next)).catch(next);
+      4 };
+      5 
+      6 module.exports = asyncHandler;
+
+● Write(src\utils\logger.js)
+  ⎿  Wrote 21 lines to src\utils\logger.js
+       1 const LEVELS = { debug: 10, info: 20, warn: 30, error: 40 };
+       2 
+       3 /** Logger mínimo com níveis (sem dependências). Nunca logar seg
+         redos ou dados de cartão. */
+       4 function createLogger(level = 'info') {
+       5     const threshold = LEVELS[level] ?? LEVELS.info;
+       6 
+       7     const write = (name, stream) => (message, meta) => {
+       8         if (LEVELS[name] < threshold) return;
+       9         const line = `${new Date().toISOString()} [${name.toUppe
+     … +13 lines (ctrl+o to expand)
+
+● Write(src\routes\checkoutRoutes.js)
+  ⎿  Wrote 17 lines to src\routes\checkoutRoutes.js
+       1 const express = require('express');
+       2 const asyncHandler = require('../utils/asyncHandler');
+       3 const { parseCheckoutPayload } = require('../utils/validators');
+       4 
+       5 function checkoutRoutes({ checkoutController }) {
+       6     const router = express.Router();
+       7 
+       8     router.post('/api/checkout', asyncHandler(async (req, res) =
+         > {
+       9         const input = parseCheckoutPayload(req.body);
+     … +8 lines (ctrl+o to expand)
+
+● Write(src\routes\adminRoutes.js)
+  ⎿  Wrote 15 lines to src\routes\adminRoutes.js
+       1 const express = require('express');
+       2 const asyncHandler = require('../utils/asyncHandler');
+       3 
+       4 function adminRoutes({ reportController, requireAdmin }) {
+       5     const router = express.Router();
+       6 
+       7     router.get('/api/admin/financial-report', requireAdmin, asyn
+         cHandler(async (req, res) => {
+       8         const report = await reportController.getFinancialReport
+         ();
+     … +7 lines (ctrl+o to expand)
+
+● Write(src\routes\userRoutes.js)
+  ⎿  Wrote 18 lines to src\routes\userRoutes.js
+       1 const express = require('express');
+       2 const asyncHandler = require('../utils/asyncHandler');
+       3 const { parseIdParam } = require('../utils/validators');
+       4 
+       5 function userRoutes({ userController, requireAdmin }) {
+       6     const router = express.Router();
+       7 
+       8     // Sem sessão de usuário no sistema: apenas administradores 
+         podem remover contas.
+       9     router.delete('/api/users/:id', requireAdmin, asyncHandler(a
+     … +10 lines (ctrl+o to expand)
+
+● Write(src\middlewares\adminAuth.js)
+  ⎿  Wrote 29 lines to src\middlewares\adminAuth.js
+       1 const crypto = require('crypto');
+       2 const { ForbiddenError, UnauthorizedError } = require('../errors
+         /AppError');
+       3 
+       4 const ADMIN_TOKEN_HEADER = 'x-admin-token';
+       5 
+       6 function safeEqual(a, b) {
+       7     // Compara digests de tamanho fixo para não vazar o tamanho 
+         do token por timing.
+       8     const digest = (value) => crypto.createHash('sha256').update
+     … +22 lines (ctrl+o to expand)
+
+● Write(src\middlewares\errorHandler.js)
+  ⎿  Wrote 29 lines to src\middlewares\errorHandler.js
+       1 const { AppError } = require('../errors/AppError');
+       2 
+       3 const INTERNAL_ERROR_MESSAGE = 'Erro interno';
+       4 const NOT_FOUND_MESSAGE = 'Recurso não encontrado';
+       5 
+       6 function notFoundHandler(req, res) {
+       7     res.status(404).send(NOT_FOUND_MESSAGE);
+       8 }
+       9 
+      10 /**
+     … +19 lines (ctrl+o to expand)
+
+● Write(src\middlewares\requestLogger.js)
+  ⎿  Wrote 12 lines to src\middlewares\requestLogger.js
+       1 function createRequestLogger({ logger }) {
+       2     return function requestLogger(req, res, next) {
+       3         const startedAt = process.hrtime.bigint();
+       4         res.on('finish', () => {
+       5             const durationMs = Number(process.hrtime.bigint() -
+         startedAt) / 1e6;
+       6             logger.info(`${req.method} ${req.originalUrl} ${res.
+         statusCode} ${durationMs.toFixed(1)}ms`);
+       7         });
+       8         next();
+     … +4 lines (ctrl+o to expand)
+
+● Step 6: composition root + entry point, then remove orphaned files and update
+  manifest/docs.
+
+● Write(src\app.js)
+  ⎿  Added 58 lines, removed 10 lines
+       1  const express = require('express');
+       2 -const AppManager = require('./AppManager');                    
+       3 -const { config } = require('./utils');                         
+       2 
+       5 -const app = express();                                         
+       6 -app.use(express.json());                                       
+       3 +const UserModel = require('./models/userModel');               
+       4 +const CourseModel = require('./models/courseModel');           
+       5 +const EnrollmentModel = require('./models/enrollmentModel');   
+       6 +const PaymentModel = require('./models/paymentModel');         
+       7 +const AuditLogModel = require('./models/auditLogModel');       
+       8 +const ReportModel = require('./models/reportModel');           
+       9 
+       8 -const manager = new AppManager();                              
+       9 -manager.initDb();                                              
+      10 -manager.setupRoutes(app);                                      
+      10 +const passwordService = require('./services/passwordService'); 
+      11 +const PaymentService = require('./services/paymentService');   
+      12 
+      12 -app.listen(config.port, () => {                                
+      13 -    console.log(`Frankenstein LMS rodando na porta ${config.por
+         -t}...`);                                                       
+      14 -});                                                            
+      13 +const CheckoutController = require('./controllers/checkoutContr
+         +oller');                                                       
+      14 +const ReportController = require('./controllers/reportControlle
+         +r');                                                           
+      15 +const UserController = require('./controllers/userController');
+      16 +                                                               
+      17 +const checkoutRoutes = require('./routes/checkoutRoutes');     
+      18 +const adminRoutes = require('./routes/adminRoutes');           
+      19 +const userRoutes = require('./routes/userRoutes');             
+      20 +                                                               
+      21 +const { createRequireAdmin } = require('./middlewares/adminAuth
+         +');                                                            
+      22 +const { createRequestLogger } = require('./middlewares/requestL
+         +ogger');                                                       
+      23 +const { createErrorHandler, notFoundHandler } = require('./midd
+         +lewares/errorHandler');                                        
+      24 +                                                               
+      25 +/**                                                            
+      26 + * Composition root: instancia models, services e controllers c
+         +om suas dependências                                           
+      27 + * e registra rotas e middlewares. Não abre conexão nem faz lis
+         +ten (ver server.js).                                           
+      28 + */                                                            
+      29 +function createApp({ db, config, logger }) {                   
+      30 +    const userModel = new UserModel(db);                       
+      31 +    const courseModel = new CourseModel(db);                   
+      32 +    const enrollmentModel = new EnrollmentModel(db);           
+      33 +    const paymentModel = new PaymentModel(db);                 
+      34 +    const auditLogModel = new AuditLogModel(db);               
+      35 +    const reportModel = new ReportModel(db);                   
+      36 +                                                               
+      37 +    const paymentService = new PaymentService({ apiKey: config.
+         +paymentGatewayKey, logger });                                  
+      38 +                                                               
+      39 +    const checkoutController = new CheckoutController({        
+      40 +        db, userModel, courseModel, enrollmentModel, paymentMod
+         +el, auditLogModel, paymentService, passwordService,            
+      41 +    });                                                        
+      42 +    const reportController = new ReportController({ reportModel
+         + });                                                           
+      43 +    const userController = new UserController({ db, userModel, 
+         +auditLogModel });                                              
+      44 +                                                               
+      45 +    const requireAdmin = createRequireAdmin(config);           
+      46 +                                                               
+      47 +    const app = express();                                     
+      48 +    app.disable('x-powered-by');                               
+      49 +    app.use(createRequestLogger({ logger }));                  
+      50 +    app.use(express.json());                                   
+      51 +                                                               
+      52 +    app.use(checkoutRoutes({ checkoutController }));           
+      53 +    app.use(adminRoutes({ reportController, requireAdmin }));  
+      54 +    app.use(userRoutes({ userController, requireAdmin }));     
+      55 +                                                               
+      56 +    app.use(notFoundHandler);                                  
+      57 +    app.use(createErrorHandler({ logger }));                   
+      58 +                                                               
+      59 +    return app;                                                
+      60 +}                                                              
+      61 +                                                               
+      62 +module.exports = { createApp };                                
+
+● Write(src\server.js)
+  ⎿  Wrote 48 lines to src\server.js
+       1 const { loadConfig } = require('./config');
+       2 const { createLogger } = require('./utils/logger');
+       3 const { Database } = require('./database/connection');
+       4 const { initSchema } = require('./database/schema');
+       5 const { seedDatabase } = require('./database/seed');
+       6 const { hashPassword } = require('./services/passwordService');
+       7 const { createApp } = require('./app');
+       8 
+       9 function warnAboutUnsafeConfig(config, logger) {
+      10     if (!config.authRequired) {
+     … +38 lines (ctrl+o to expand)
+
+● Write(.env.example)
+  ⎿  Wrote 21 lines to .env.example
+      1 # Porta HTTP (default: 3000)
+      2 PORT=3000
+      3 
+      4 # Caminho do banco SQLite (default: :memory: — dados somem no res
+        tart)
+      5 DB_PATH=:memory:
+      6 
+      7 # Token exigido no header X-Admin-Token das rotas administrativas
+      8 # (GET /api/admin/financial-report, DELETE /api/users/:id). Sem v
+        alor => rotas bloqueadas (403).
+     … +13 lines (ctrl+o to expand)
+
+● Bash(cd "D:/Dev/courses/MBA em Engenharia de Software com IA/04 - Desafios
+      Técnicos - MBA IA/base/ecommerce-api-legacy" && git rm -q
+      src/AppManager.js src/utils.js &…)
+  ⎿  D  src/AppManager.js
+      M src/app.js
+     D  src/utils.js
+     … +12 lines (ctrl+o to expand)
+  ⎿  Deleted src\AppManager.js -141
+        1 -const sqlite3 = require('sqlite3').verbose();                 
+        2 -const { config, logAndCache, badCrypto, totalRevenue } = requi
+          -re('./utils');                                                
+        3 -                                                              
+        4 -class AppManager {                                            
+        5 -    constructor() {                                           
+        6 -                                                              
+        7 -        this.db = new sqlite3.Database(':memory:');           
+        8 -    }                                                         
+        9 -                                                              
+       10 -    initDb() {                                                
+       11 -        this.db.serialize(() => {                             
+       12 -            this.db.run("CREATE TABLE users (id INTEGER PRIMAR
+          -Y KEY, name TEXT, email TEXT, pass TEXT)");                   
+       13 -            this.db.run("CREATE TABLE courses (id INTEGER PRIM
+          -ARY KEY, title TEXT, price REAL, active INTEGER)");           
+       14 -            this.db.run("CREATE TABLE enrollments (id INTEGER 
+          -PRIMARY KEY, user_id INTEGER, course_id INTEGER)");           
+       15 -            this.db.run("CREATE TABLE payments (id INTEGER PRI
+          -MARY KEY, enrollment_id INTEGER, amount REAL, status TEXT)"); 
+       16 -            this.db.run("CREATE TABLE audit_logs (id INTEGER P
+          -RIMARY KEY, action TEXT, created_at DATETIME)");              
+       17 -                                                              
+       18 -            this.db.run("INSERT INTO users (name, email, pass)
+          - VALUES ('Leonan', 'leonan@fullcycle.com.br', '123')");       
+       19 -            this.db.run("INSERT INTO courses (title, price, ac
+          -tive) VALUES ('Clean Architecture', 997.00, 1), ('Docker', 497
+          -.00, 1)");                                                    
+       20 -            this.db.run("INSERT INTO enrollments (user_id, cou
+          -rse_id) VALUES (1, 1)");                                      
+       21 -            this.db.run("INSERT INTO payments (enrollment_id, 
+          -amount, status) VALUES (1, 997.00, 'PAID')");                 
+       22 -        });                                                   
+       23 -    }                                                         
+       24 -                                                              
+       25 -    setupRoutes(app) {                                        
+       26 -        const self = this;                                    
+       27 -                                                              
+       28 -        app.post('/api/checkout', (req, res) => {             
+       29 -            let u = req.body.usr;                             
+       30 -            let e = req.body.eml;                             
+       31 -            let p = req.body.pwd;                             
+       32 -            let cid = req.body.c_id;                          
+       33 -            let cc = req.body.card;                           
+       34 -                                                              
+       35 -            if (!u || !e || !cid || !cc) return res.status(400
+          -).send("Bad Request");                                        
+       36 -                                                              
+       37 -            this.db.get("SELECT * FROM courses WHERE id = ? AN
+          -D active = 1", [cid], (err, course) => {                      
+       38 -                if (err || !course) return res.status(404).sen
+          -d("Curso não encontrado");                                    
+       39 -                                                              
+       40 -                this.db.get("SELECT id FROM users WHERE email 
+          -= ?", [e], (err, user) => {                                   
+     … +101 lines (ctrl+o to expand)
+  ⎿  Deleted src\utils.js -25
+       1 -const config = {                                               
+       2 -    dbUser: "admin_master",                                    
+       3 -    dbPass: "senha_super_secreta_prod_123",                    
+       4 -    paymentGatewayKey: "pk_live_1234567890abcdef",             
+       5 -    smtpUser: "no-reply@fullcycle.com.br",                     
+       6 -    port: 3000                                                 
+       7 -};                                                             
+       8 -                                                               
+       9 -let globalCache = {};                                          
+      10 -let totalRevenue = 0;                                          
+      11 -                                                               
+      12 -function logAndCache(key, data) {                              
+      13 -    console.log(`[LOG] Salvando no cache: ${key}`);            
+      14 -    globalCache[key] = data;                                   
+      15 -}                                                              
+      16 -                                                               
+      17 -function badCrypto(pwd) {                                      
+      18 -    let hash = "";                                             
+      19 -    for(let i = 0; i < 10000; i++) {                           
+      20 -        hash += Buffer.from(pwd).toString('base64').substring(0
+         -, 2);                                                          
+      21 -    }                                                          
+      22 -    return hash.substring(0, 10);                              
+      23 -}                                                              
+      24 -                                                               
+      25 -module.exports = { config, logAndCache, badCrypto, globalCache,
+         - totalRevenue };                                               
+
+● Update(src\services\paymentService.js)
+  ⎿  Removed 4 lines
+      14          this.logger = logger;
+      15      }
+      16 
+      17 -    get isSimulated() {                                        
+      18 -        return !this.apiKey;                                   
+      19 -    }                                                          
+      20 -                                                               
+      17      authorize({ card, amount }) {
+      18          const status = card.startsWith(APPROVED_CARD_PREFIX) ?
+          PAYMENT_STATUS.PAID : PAYMENT_STATUS.DENIED;
+      19          this.logger.info(`Autorização de pagamento card=${maskC
+          ard(card)} amount=${amount} status=${status}`);
+● Write(package.json)
+  ⎿  Added 8 lines, removed 4 lines
+       1  {
+       2    "name": "desafio-arquitetura-ia-boilerplate",
+       3    "version": "1.0.0",
+       4 -  "description": "Boilerplate com código legado para refatoraçã
+         -o",                                                            
+       5 -  "main": "src/app.js",                                        
+       4 +  "description": "LMS API (checkout de cursos) em Node.js/Expre
+         +ss organizada em MVC",                                         
+       5 +  "main": "src/server.js",                                     
+       6    "scripts": {
+       7 -    "start": "node src/app.js"                                 
+       7 +    "start": "node src/server.js",                             
+       8 +    "start:env": "node --env-file=.env src/server.js"          
+       9    },
+      10 +  "engines": {                                                 
+      11 +    "node": ">=20.6"                                           
+      12 +  },                                                           
+      13    "dependencies": {
+      14      "express": "^4.18.2",
+      15      "sqlite3": "^5.1.6"
+      16    }
+      13 -}                                                              
+         \ No newline at end of file
+      17 +}                                                              
+
+● Write(README.md)
+  ⎿  Added 37 lines, removed 3 lines
+       1  # ecommerce-api-legacy
+       2 
+       3 -LMS API (com fluxo de checkout) em Node.js/Express usada como e
+         -ntrada do desafio `refactor-arch`.                             
+       3 +LMS API (com fluxo de checkout) em Node.js/Express, refatorada 
+         +para MVC pela skill `refactor-arch`.                           
+       4 
+       5  ## Como rodar
+       6 
+       7  ```bash
+       8  npm install
+       9 -npm start                                                      
+       9 +cp .env.example .env   # defina ADMIN_TOKEN (e, opcionalmente, 
+         +SEED_USER_PASSWORD)                                            
+      10 +npm run start:env      # carrega .env (Node >= 20.6)           
+      11 +# ou: npm start        # usa apenas as variáveis já exportadas 
+         +no shell                                                       
+      12  ```
+      13 
+      12 -A aplicação sobe em `http://localhost:3000`. O banco SQLite é e
+         -m memória e já carrega seeds automaticamente no boot.          
+      14 +A aplicação sobe em `http://localhost:3000` (`PORT`). O banco S
+         +QLite é em memória por padrão                                  
+      15 +(`DB_PATH`) e recebe seeds automaticamente no boot quando está 
+         +vazio.                                                         
+      16 
+      17  Exemplos de requisições estão em `api.http`.
+      18 +                                                               
+      19 +## Endpoints                                                   
+      20 +                                                               
+      21 +| Método | Path | Auth | Sucesso |                             
+      22 +|---|---|---|---|                                              
+      23 +| POST | `/api/checkout` | — (conta existente exige a senha cor
+         +reta em `pwd`) | 200 `{ msg, enrollment_id }` |                
+      24 +| GET | `/api/admin/financial-report` | `X-Admin-Token` | 200 `
+         +[{ course, revenue, students: [{ student, paid }] }]` |        
+      25 +| DELETE | `/api/users/:id` | `X-Admin-Token` | 200 texto |    
+      26 +                                                               
+      27 +Erros são respondidos em texto puro, como no legado: 400 `Bad R
+         +equest` / `Pagamento recusado`,                                
+      28 +401 `Credenciais inválidas` / `Não autorizado`, 403 (admin não 
+         +configurado), 404, 409 (já matriculado), 500 `Erro interno`.   
+      29 +                                                               
+      30 +Rotas administrativas são *fail-closed*: sem `ADMIN_TOKEN` resp
+         +ondem 403. Para desenvolvimento                                
+      31 +é possível desligar a autenticação com `AUTH_REQUIRED=false` (u
+         +m aviso é logado no boot).                                     
+      32 +                                                               
+      33 +## Estrutura                                                   
+      34 +                                                               
+      35 +```                                                            
+      36 +src/                                                           
+      37 +├── server.js            # entry point: config, banco, schema/s
+         +eed, listen                                                    
+      38 +├── app.js               # composition root: models → services 
+         +→ controllers → routes                                         
+      39 +├── config/              # env vars + constantes de domínio    
+      40 +├── database/            # conexão promisificada, transações, s
+         +chema, seed                                                    
+      41 +├── models/              # acesso a dados (queries parametrizad
+         +as)                                                            
+      42 +├── services/            # hash de senha (scrypt), gateway de p
+         +agamento                                                       
+      43 +├── controllers/         # casos de uso (checkout, relatório, u
+         +suários)                                                       
+      44 +├── routes/              # views HTTP (express.Router)         
+      45 +├── middlewares/         # auth admin, request logger, error ha
+         +ndler                                                          
+      46 +├── errors/              # AppError e subclasses               
+      47 +└── utils/               # validators, logger, asyncHandler    
+      48 +```                                                            
+
+● Write(api.http)
+  ⎿  Added 3 lines
+      1  @baseUrl = http://localhost:3000
+      2 +@adminToken = troque-pelo-ADMIN_TOKEN                           
+      3 
+      4  ### Checkout - sucesso
+      5  POST {{baseUrl}}/api/checkout
+     ...
+      27 
+      28  ### Relatório financeiro administrativo
+      29  GET {{baseUrl}}/api/admin/financial-report
+      30 +X-Admin-Token: {{adminToken}}                                  
+      31 
+      32  ### Deletar usuário
+      33  DELETE {{baseUrl}}/api/users/1
+      34 +X-Admin-Token: {{adminToken}}                                  
+
+● Now validation: install dependencies and boot.
+
+● Bash(cd "D:/Dev/courses/MBA em Engenharia de Software com IA/04 - Desafios
+      Técnicos - MBA IA/base/ecommerce-api-legacy" && npm install --no-audit
+      --no-fund 2>&1 | ta…)
+  ⎿  npm warn deprecated prebuild-install@7.1.3: No longer maintained. Plea
+     se contact the author of the relevant native addon; alternatives are a
+     vailable.
+     … +8 lines (ctrl+o to expand)
+  ⎿  Updated package-lock.json +3
+      10        "dependencies": {
+      11          "express": "^4.18.2",
+      12          "sqlite3": "^5.1.6"
+      13 +      },                                                       
+      14 +      "engines": {                                             
+      15 +        "node": ">=20.6"                                       
+      16        }
+      17      },
+      18      "node_modules/@gar/promisify": {
+  ⎿  (timeout 5m)
+
+● Dependencies installed. I'll write a validation script in the scratchpad that
+  boots the app and exercises every endpoint and error path.
+
+  Made 1 scratchpad edit +135, ran 1 shell command (ctrl+o to expand)
+
+● All 28 checks pass. Now I'll re-run the catalog's detection signals and
+  confirm npm start boots.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● The refactor is finished. The app boots, all 3 original endpoints were
+  exercised in 28 scripted checks with 0 failures, and none of the 19 findings
+  show up again when I re-ran the audit's searches.
+
+  ================================
+  PHASE 3: REFACTORING COMPLETE
+  ================================
+  ## New Project Structure
+  ecommerce-api-legacy/
+  ├── package.json             # start → node src/server.js; start:env 
+  (--env-file); engines node>=20.6
+  ├── .env.example             # PORT, DB_PATH, ADMIN_TOKEN, AUTH_REQUIRED, 
+  PAYMENT_GATEWAY_KEY, SEED_USER_PASSWORD, LOG_LEVEL
+  ├── api.http / README.md     # updated (X-Admin-Token, structure, how to run)
+  └── src/
+      ├── server.js            # entry point: config → db → schema/seed → 
+  createApp → listen (+ graceful shutdown)
+      ├── app.js               # composition root (dependency injection)
+      ├── config/              index.js (env) · constants.js (PAYMENT_STATUS, 
+  APPROVED_CARD_PREFIX, patterns)
+      ├── database/            connection.js (Promise + serialized transactions)
+  · schema.js (FK/UNIQUE/CASCADE) · seed.js
+      ├── models/              userModel · courseModel · enrollmentModel · 
+  paymentModel · auditLogModel · reportModel
+      ├── services/            passwordService (scrypt+salt) · paymentService 
+  (masked card)
+      ├── controllers/         checkoutController · reportController · 
+  userController
+      ├── routes/              checkoutRoutes · adminRoutes · userRoutes   
+  (views: express.Router)
+      ├── middlewares/         adminAuth (fail-closed) · errorHandler · 
+  requestLogger
+      ├── errors/              AppError + 
+  ValidationError/PaymentDenied/Unauthorized/Forbidden/NotFound/Conflict
+      └── utils/               validators · logger · asyncHandler
+  (removed: src/AppManager.js, src/utils.js)
+
+  ## Findings addressed
+  #1  CRITICAL AP-02  Secrets removed from code; read from env (no default for 
+  the gateway key); key no longer logged; seed password hashed (P-02)
+  #2  CRITICAL AP-03  financial-report and DELETE /users require X-Admin-Token; 
+  fail-closed (403 when unset), opt-out only via AUTH_REQUIRED=false with a boot
+  warning (P-03)
+  #3  CRITICAL AP-04  AppManager split into 28 modules across 
+  config/database/models/services/controllers/routes/middlewares (P-04)
+  #4  CRITICAL AP-05  Card number never logged; only ****4444 (verified in the 
+  log) (P-05)
+  #5  HIGH     AP-06  Checkout and report are async/await use cases in 
+  controllers; routes only map HTTP (P-06)
+  #6  HIGH     AP-07  db created in server.js and injected via constructors; 
+  routes never touch the db (P-07)
+  #7  HIGH     AP-08  globalCache/totalRevenue/logAndCache removed (never read) 
+  (P-08)
+  #8  HIGH     AP-09  scrypt + salt + timingSafeEqual; pwd required; no default 
+  "123456"; existing account requires the correct password (P-09)
+  #9  HIGH     AP-10  Transaction for user+enrollment+payment+audit; FKs with ON
+  DELETE CASCADE; UNIQUE(email) and UNIQUE(user_id,course_id); delete checks 
+  changes (P-10)
+  #10 MEDIUM   AP-11  Report uses 1 LEFT JOIN query instead of 1+C+2E (P-11)
+  #11 MEDIUM   AP-12  validators.js checks types, email, card (12–19 digits), 
+  integer c_id and :id → 400; numeric card no longer crashes the process (P-12)
+  #12 MEDIUM   AP-13  Central errorHandler + notFoundHandler; AppError with 
+  status; 500 without internal details; malformed JSON → 400 (P-13)
+  #13 MEDIUM   AP-14  Nested callbacks replaced by a Promise wrapper + 
+  async/await; no `self = this` (P-14)
+  #14 MEDIUM   AP-15  PORT/DB_PATH from env (dev defaults only in config/) 
+  (P-02)
+  #15 MEDIUM   AP-16  10k-iteration loop replaced by async scrypt (threadpool); 
+  gateway is an injected service (P-06/P-09)
+  #16 LOW      AP-17  Named constants (PAYMENT_STATUS, APPROVED_CARD_PREFIX, 
+  DEFAULT_PORT) (P-15)
+  #17 LOW      AP-18  Descriptive internal names; contract fields 
+  usr/eml/pwd/c_id/card mapped in the validator (P-15)
+  #18 LOW      AP-19  Logger with levels + request logging middleware; no PII or
+  secrets (P-16)
+  #19 LOW      AP-20  Unused exports and dead secrets removed (P-15)
+
+  ## Contract changes (security-driven)
+  - GET /api/admin/financial-report and DELETE /api/users/:id now require the 
+  X-Admin-Token header (401 when missing or wrong; 403 when ADMIN_TOKEN is not 
+  configured). The legacy open behaviour only comes back with 
+  AUTH_REQUIRED=false.
+  - POST /api/checkout: `pwd` is now required (400 "Bad Request"); an existing 
+  email with the wrong password → 401 "Credenciais inválidas" (the legacy code 
+  let anyone buy using someone else's account).
+  - POST /api/checkout: a repeated enrollment (same user + course) → 409 instead
+  of a duplicate charge (data integrity). Card must be 12–19 digits and the 
+  email well formed (400).
+  - DELETE /api/users/:id: success body changed from "Usuário deletado, mas as 
+  matrículas e pagamentos ficaram sujos no banco." to "Usuário deletado" (the 
+  old text described the bug, which is fixed by the cascade). Nonexistent id → 
+  404, invalid id → 400 (previously always 200).
+  - Unknown routes → 404 text "Recurso não encontrado" (previously Express's 
+  HTML page). Seed user leonan@... now gets its password from SEED_USER_PASSWORD
+  (random when unset).
+  - Unchanged: paths, methods, request field names, success status codes and 
+  bodies ({msg, enrollment_id}; [{course, revenue, students:[{student, 
+  paid}]}]), plain-text error messages "Bad Request", "Curso não encontrado", 
+  "Pagamento recusado".
+
+  ## Validation
+    ✓ Application boots without errors (npm start; also with ADMIN_TOKEN / 
+  without it / AUTH_REQUIRED=false)
+    ✓ All endpoints respond correctly (3/3), with 28/28 scripted checks passing:
+  success + errors 400/401/403/404/409, report identical to legacy on the seed 
+  data, 5 concurrent checkouts, cascade with no orphans, masked log
+    ✓ Zero CRITICAL/HIGH anti-patterns remaining (detection greps re-run; the 
+  only remaining hits are benign: the header-name constant, console.* inside the
+  logger, dev defaults in config/)
+  ================================
+
+  Other notes:
+  - I added no new dependencies; password hashing uses Node's built-in crypto.
+    package-lock.json changed slightly because I edited package.json and ran npm
+    install.
+  - I didn't add a minimum password length, because the "payment declined"
+    example in api.http uses the password "123". If you want one, it's a single
+    line in src/utils/validators.js.
+  - To run with real settings: cp .env.example .env, set ADMIN_TOKEN, then npm 
+    run start:env.
+  - The validation script is at C:\Users\SPIRLA~1\AppData\Local\Temp\claude\22fe
+    f36f3bfbb585\25f97c4e-82d9-4d0f-9ab9-58a8bc031ce8\scratchpad\validate.js.
+  - Nothing was committed; the changes are in your working tree.
+
+✻ Sautéed for 5m 40s · done 1:17 PM
